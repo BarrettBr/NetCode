@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { RopeOperation } from "../hooks/useRopes";
+import type { RopeOperation } from "@/hooks/useRopes";
 import LineNum from "@/components/LineNum";
 
 type Props = {
