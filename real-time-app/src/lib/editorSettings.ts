@@ -8,6 +8,7 @@ export type EditorSettings = {
   fontSize: number;
   fontFamily: EditorFontFamily;
   tabSize: number;
+  terminalDock: "bottom" | "right";
 };
 
 export const FONT_FAMILY_OPTIONS: EditorFontFamily[] = [
@@ -21,6 +22,7 @@ export const DEFAULT_EDITOR_SETTINGS: EditorSettings = {
   fontSize: 14,
   fontFamily: "Fira Code",
   tabSize: 4,
+  terminalDock: "bottom",
 };
 
 export function clampFontSize(value: number): number {

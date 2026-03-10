@@ -3,6 +3,7 @@ module github.com/Xavanion/NetCode
 go 1.23.7
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/gin-contrib/cors v1.7.5
 	github.com/gin-gonic/contrib v0.0.0-20250113154928-93b827325fec
 	github.com/gin-gonic/gin v1.10.0

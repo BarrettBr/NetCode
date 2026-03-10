@@ -10,6 +10,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	roomhandler "github.com/Xavanion/NetCode/backend/room-handling"
+	terminalhandler "github.com/Xavanion/NetCode/backend/terminal-handling"
 )
 
 // Upgrade HTTP request to WS connection
@@ -24,6 +25,7 @@ var upgrader = websocket.Upgrader{
 func main() {
 	// Create a new manager to handler all rooms that get spun off later
 	roomManager := roomhandler.NewRoomManager()
+	terminalManager := terminalhandler.NewTerminalManager()
 
 	router := gin.Default()
 
@@ -81,6 +83,20 @@ func main() {
 				room := roomManager.CreateRoom(roomID)
 				room.NewConnection(conn)
 			}
+		})
+		api.GET("/terminal/ws", func(c *gin.Context) {
+			roomID := string(c.Query("room"))
+			if roomID == "" {
+				log.Print("Bad terminal websocket request")
+				return
+			}
+
+			conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+			if err != nil {
+				return
+			}
+
+			terminalManager.HandleConnection(roomID, conn)
 		})
 	}
 	router.Run("0.0.0.0:9090")

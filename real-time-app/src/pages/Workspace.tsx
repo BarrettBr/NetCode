@@ -1,7 +1,7 @@
 import Dashboard from "@/components/Dashboard";
 import dashIcon from "@/assets/dashboard.svg";
 import codeIcon from "@/assets/code-file.svg";
-import Code from "@/pages/Code";
+import WorkspaceCode from "@/pages/WorkspaceCode";
 import Settings from "@/pages/Settings";
 import Sidebar from "@/components/Sidebar";
 import {
@@ -130,7 +130,9 @@ export default function Workspace({ currentSite, setSite }: Props) {
       {/* Main Content */}
       <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto bg-bg">
         {currentSite === "dash" && <Dashboard user="Barrett" />}
-        {currentSite === "code" && <Code editorSettings={editorSettings} />}
+        {currentSite === "code" && (
+          <WorkspaceCode editorSettings={editorSettings} />
+        )}
         {currentSite === "settings" && (
           <Settings
             editorSettings={editorSettings}

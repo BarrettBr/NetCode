@@ -36,6 +36,13 @@ export default function Settings({
     }));
   };
 
+  const updateTerminalDock = (value: EditorSettings["terminalDock"]) => {
+    setEditorSettings((prev) => ({
+      ...prev,
+      terminalDock: value,
+    }));
+  };
+
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-10 p-6 font-fira text-white">
       <header className="max-w-2xl space-y-3">
@@ -127,11 +134,51 @@ export default function Settings({
         <div className="mb-4">
           <h2 className="text-2xl text-white">Other settings</h2>
           <p className="mt-2 text-sm text-white/45">
-            These are placeholders for future workspace preferences.
+            Adjust how the advanced workspace surface behaves.
           </p>
         </div>
 
         <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-2xl border border-Cborder bg-light-panel/60 p-4 md:col-span-2">
+            <p className="text-sm uppercase tracking-[0.18em] text-white/35">
+              Terminal dock
+            </p>
+            <p className="mt-3 text-sm text-white/55">
+              Choose whether the workspace terminal opens below the editor or to
+              the right.
+            </p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {[
+                {
+                  value: "bottom" as const,
+                  title: "Bottom",
+                  detail: "Editor on top, terminal docked below.",
+                },
+                {
+                  value: "right" as const,
+                  title: "Right",
+                  detail: "Editor on the left, terminal docked to the side.",
+                },
+              ].map((option) => {
+                const active = editorSettings.terminalDock === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => updateTerminalDock(option.value)}
+                    className={`rounded-2xl border p-4 text-left transition ${
+                      active
+                        ? "border-accent bg-panel text-white"
+                        : "border-Cborder bg-panel/60 text-white/70 hover:border-accent/40 hover:text-white"
+                    }`}
+                  >
+                    <p className="text-base font-semibold">{option.title}</p>
+                    <p className="mt-2 text-sm text-white/50">{option.detail}</p>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
           <div className="rounded-2xl border border-Cborder bg-light-panel/60 p-4">
             <p className="text-sm uppercase tracking-[0.18em] text-white/35">Theme</p>
             <p className="mt-3 text-white/75">Dark</p>
