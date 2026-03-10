@@ -14,11 +14,11 @@ function Code() {
   );
 
   return (
-    <div className="flex flex-col flex-1 h-[calc(100vh-70px)] md:max-h-screen p-[20px]">
+    <div className="flex h-[calc(100vh-70px)] flex-col p-[20px]">
       <Toolbar reviewText={setReviewText} />
-      <div className="flex flex-col md:flex-row w-full flex-1 md:min-h-0">
+      <div className="flex w-full flex-1 flex-col md:min-h-0 md:flex-row">
         {/* Input Box */}
-        <div className="flex flex-col md:max-h-screen md:flex-[3] md:overflow-hidden">
+        <div className="flex min-h-0 flex-col md:flex-[3] md:overflow-hidden">
           <Textbox
             curText={text}
             setText={updateText}
@@ -30,7 +30,7 @@ function Code() {
         </div>
 
         {/* Output Box */}
-        <div className="flex flex-col md:flex-[2] md:overflow-hidden border-2 md:border-l-0 border-[#213030] rounded">
+        <div className="flex min-h-0 flex-col rounded border-2 border-[#213030] md:flex-[2] md:overflow-hidden md:rounded-l-none md:border-l-0">
           <OutputToolbar
             setActiveOutput={setActiveOutput}
             activeOutput={activeOutput}

@@ -7,15 +7,16 @@ type Props = {
 
 export default function RepoCard({ name, descrip, language, date }: Props) {
   return (
-    <div className="flex flex-col text-left border border-Cborder rounded-xl px-6 py-4 bg-light-panel w-50 h-65 max-w-sm">
-      <p className="text-xl font-semibold">{name}</p>
-      <p className="text-gray-400 mt-2 text-sm line-clamp-6 h-40 overflow-hidden">
-        {descrip}
-      </p>
-      <div className="mt-3 mb-2 p-1 px-4 bg-white/5 rounded-xl w-fit">
+    <button
+      type="button"
+      className="flex h-full min-h-[16rem] w-full cursor-pointer flex-col rounded-2xl border border-Cborder bg-light-panel px-5 py-4 text-left transition hover:border-accent/40 hover:bg-[#112630]"
+    >
+      <p className="text-xl font-semibold text-white">{name}</p>
+      <p className="mt-2 line-clamp-5 text-sm text-white/60">{descrip}</p>
+      <div className="mt-auto mb-3 w-fit rounded-xl bg-white/5 px-4 py-1 text-sm text-accent">
         {language}
       </div>
-      <p className="text-gray-400">{date}</p>
-    </div>
+      <p className="text-sm text-white/45">{date}</p>
+    </button>
   );
 }

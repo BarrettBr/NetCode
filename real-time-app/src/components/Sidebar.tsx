@@ -4,10 +4,10 @@ import BranchSwapper from "@/components/BranchSwapper";
 
 export default function Sidebar() {
   return (
-    <div className="flex flex-col w-full p-3 h-full min-h-0 border-t-2 border-t-Cborder">
+    <div className="mt-2 flex h-full min-h-0 w-full flex-col border-t border-t-Cborder/80 pt-4">
       <WorkspaceSwitcher />
       <BranchSwapper />
-      <div className="mt-1 flex-1 min-h-0 overflow-y-auto custom-scroll">
+      <div className="mt-4 min-h-0 flex-1 overflow-y-auto custom-scroll pr-1">
         <FileExplorer />
       </div>
     </div>

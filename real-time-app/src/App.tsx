@@ -9,6 +9,7 @@ import { useState } from "react";
 function AppWrapper() {
   const location = useLocation();
   const isWorkspace = location.pathname.startsWith("/workspace");
+  const isLanding = location.pathname.startsWith("/home");
   const [currentSite, setSite] = useState("dash");
 
   return (
@@ -16,7 +17,7 @@ function AppWrapper() {
       <Navbar currentSite={currentSite} setSite={setSite} />
       <div
         className={`flex flex-col flex-1 pt-[70px] overflow-hidden ${
-          isWorkspace ? "" : "mx-5 sm:mx-10"
+          isWorkspace || isLanding ? "" : "mx-5 sm:mx-10"
         }`}
       >
         <Routes>

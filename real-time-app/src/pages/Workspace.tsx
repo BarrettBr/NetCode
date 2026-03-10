@@ -13,38 +13,41 @@ type Props = {
 
 export default function Workspace({ currentSite, setSite }: Props) {
   const buttonClass = (active: boolean) =>
-    `h-10 w-45 p-5 rounded-xl items-center text-center flex flex-row cursor-pointer ${
-      active ? "bg-light-panel" : ""
+    `flex h-11 w-full select-none items-center rounded-xl px-4 transition ${
+      active ? "bg-light-panel border border-Cborder" : "border border-transparent hover:bg-light-panel/60"
     }`;
 
   const textClass = (active: boolean) =>
     `font-semibold ${active ? "text-tab-active" : "text-white/75"}`;
 
   return (
-    <div className="flex flex-row">
+    <div className="flex h-[calc(100vh-70px)] flex-row overflow-hidden">
       {/* Sidebar */}
-      <div className="hidden md:flex flex-col pt-10 items-center gap-5 w-[230px] flex-shrink-0 border-r-2 border-r-Cborder h-[calc(100vh-70px)]">
-        <div
+      <div className="hidden h-full w-[260px] shrink-0 flex-col gap-4 border-r-2 border-r-Cborder bg-panel/40 px-4 pt-6 md:flex">
+        <button
+          type="button"
           className={buttonClass(currentSite === "dash")}
           onClick={() => setSite("dash")}
         >
-          <img src={dashIcon} className="mr-2" />
+          <img src={dashIcon} className="mr-3 h-4 w-4" />
           <p className={textClass(currentSite === "dash")}>Dashboard</p>
-        </div>
-        <div
+        </button>
+        <button
+          type="button"
           className={buttonClass(currentSite === "code")}
           onClick={() => setSite("code")}
         >
-          <img src={codeIcon} className="mr-2" />
+          <img src={codeIcon} className="mr-3 h-4 w-4" />
           <p className={textClass(currentSite === "code")}>Code</p>
-        </div>
-        <div
+        </button>
+        <button
+          type="button"
           className={buttonClass(currentSite === "settings")}
           onClick={() => setSite("settings")}
         >
-          <img src={settingsIcon} className="mr-2" />
+          <img src={settingsIcon} className="mr-3 h-4 w-4" />
           <p className={textClass(currentSite === "settings")}>Settings</p>
-        </div>
+        </button>
         <Sidebar />
       </div>
 
@@ -57,7 +60,7 @@ export default function Workspace({ currentSite, setSite }: Props) {
       */}
 
       {/* Main Content */}
-      <div className="flex-1">
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-bg">
         {currentSite === "dash" && <Dashboard user="Barrett" />}
         {currentSite === "code" && <Code />}
         {currentSite === "settings" && <Settings />}

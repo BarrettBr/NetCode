@@ -427,7 +427,7 @@ function Textbox({
   }, [isSynced]);
 
   return (
-    <div className="flex max-h-[calc(100vh-9.2rem)] h-full flex-row border-2 border-[#213030] rounded overflow-hidden">
+    <div className="flex h-full min-h-0 flex-row overflow-hidden rounded border-2 border-[#213030] md:rounded-r-none">
       <div ref={hostRef} className="h-full w-full" />
     </div>
   );
