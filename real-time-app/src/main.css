@@ -74,6 +74,17 @@
     line-height: 1.5rem;
     color: #b5b0b0;
   }
+
+  .input-number-clean {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+
+  .input-number-clean::-webkit-outer-spin-button,
+  .input-number-clean::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
 }
 
 @layer utilities {

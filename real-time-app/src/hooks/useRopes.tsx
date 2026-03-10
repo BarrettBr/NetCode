@@ -112,6 +112,24 @@ function applyOpToText(baseText: string, op: RopeOperation): string {
   return baseText.slice(0, from) + baseText.slice(to);
 }
 
+type SharedEditorState = {
+  text: string;
+  outputText: string;
+  serverVersion: number;
+  localUID: number;
+  hasInitialSync: boolean;
+  syncVersion: number;
+};
+
+const sharedEditorState: SharedEditorState = {
+  text: "",
+  outputText: "",
+  serverVersion: 0,
+  localUID: 0,
+  hasInitialSync: false,
+  syncVersion: 0,
+};
+
 export function useRopes(): [
   string,
   (ops: RopeOperation[]) => void,
@@ -121,27 +139,32 @@ export function useRopes(): [
   boolean
 ] {
   const MAX_CURSOR_OPS = 300;
-  const textRef = useRef("");
+  const textRef = useRef(sharedEditorState.text);
   const pendingOpsRef = useRef<RopeOperation[]>([]);
   const bufferedOpsRef = useRef<RopeOperation[]>([]);
-  const serverVersionRef = useRef(0);
-  const localUID = useRef(0);
-  const hasInitialSyncRef = useRef(false);
+  const serverVersionRef = useRef(sharedEditorState.serverVersion);
+  const localUID = useRef(sharedEditorState.localUID);
+  const hasInitialSyncRef = useRef(sharedEditorState.hasInitialSync);
 
-  const [text, setText] = useState("");
-  const [outputText, setOutput] = useState("");
+  const [text, setText] = useState(sharedEditorState.text);
+  const [outputText, setOutput] = useState(sharedEditorState.outputText);
   const [incomingOp, setIncomingOp] = useState<RopeOperation[]>([]);
-  const [syncVersion, setSyncVersion] = useState(0);
-  const [isSynced, setIsSynced] = useState(false);
+  const [syncVersion, setSyncVersion] = useState(sharedEditorState.syncVersion);
+  const [isSynced, setIsSynced] = useState(sharedEditorState.hasInitialSync);
 
   const { socketRef, subscribe } = useWS();
   const debug = false;
 
   function setSnapshotText(newText: string) {
     textRef.current = newText;
+    sharedEditorState.text = newText;
     pendingOpsRef.current = [];
     setText(newText);
-    setSyncVersion((value) => value + 1);
+    setSyncVersion((value) => {
+      const next = value + 1;
+      sharedEditorState.syncVersion = next;
+      return next;
+    });
   }
 
   function queueRemoteOp(op: RopeOperation) {
@@ -219,6 +242,7 @@ export function useRopes(): [
       sendOperation(op);
     }
     textRef.current = nextText;
+    sharedEditorState.text = nextText;
     setText(nextText);
     flushBufferedOperations();
   }, []);
@@ -235,6 +259,7 @@ export function useRopes(): [
               serverVersionRef.current,
               inputOp.version
             );
+            sharedEditorState.serverVersion = serverVersionRef.current;
           }
 
           const isRemoteInput =
@@ -251,6 +276,7 @@ export function useRopes(): [
           }
 
           textRef.current = applyOpToText(textRef.current, rebasedOp);
+          sharedEditorState.text = textRef.current;
           setText(textRef.current);
           queueRemoteOp(rebasedOp);
           break;
@@ -264,6 +290,7 @@ export function useRopes(): [
           if (!isRemoteMismatch) {
             if (typeof mismatchOp?.version === "number") {
               serverVersionRef.current = mismatchOp.version;
+              sharedEditorState.serverVersion = serverVersionRef.current;
             }
             break;
           }
@@ -273,6 +300,7 @@ export function useRopes(): [
               serverVersionRef.current,
               mismatchOp.version
             );
+            sharedEditorState.serverVersion = serverVersionRef.current;
           }
 
           const rebasedOp = rebaseIncomingAgainstPending(mismatchOp);
@@ -281,6 +309,7 @@ export function useRopes(): [
           }
 
           textRef.current = applyOpToText(textRef.current, rebasedOp);
+          sharedEditorState.text = textRef.current;
           setText(textRef.current);
           queueRemoteOp(rebasedOp);
           break;
@@ -294,25 +323,30 @@ export function useRopes(): [
               serverVersionRef.current,
               data.update.version
             );
+            sharedEditorState.serverVersion = serverVersionRef.current;
           }
           flushBufferedOperations();
           break;
         }
         case "output_update":
+          sharedEditorState.outputText = data.update;
           setOutput(data.update);
           break;
         case "connection_update": {
           if (typeof data.update.version === "number") {
             serverVersionRef.current = data.update.version;
+            sharedEditorState.serverVersion = data.update.version;
           }
           if (typeof data.update.uid === "number") {
             localUID.current = data.update.uid;
+            sharedEditorState.localUID = data.update.uid;
           }
           if (typeof data.update.text === "string") {
             setIncomingOp([]);
             setSnapshotText(data.update.text);
           }
           hasInitialSyncRef.current = true;
+          sharedEditorState.hasInitialSync = true;
           setIsSynced(true);
           flushBufferedOperations();
           break;
@@ -324,8 +358,10 @@ export function useRopes(): [
           }
           if (typeof data.update?.version === "number") {
             serverVersionRef.current = data.update.version;
+            sharedEditorState.serverVersion = data.update.version;
           }
           hasInitialSyncRef.current = true;
+          sharedEditorState.hasInitialSync = true;
           setIsSynced(true);
           flushBufferedOperations();
           break;

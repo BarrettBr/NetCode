@@ -205,8 +205,8 @@ export default function FileExplorer() {
   };
 
   return (
-    <div className="flex flex-col gap-3 px-1 text-sm">
-      <div className="mb-1 flex items-start justify-between">
+    <div className="flex h-full min-h-0 flex-col gap-3 px-1 text-sm">
+      <div className="mb-1 flex shrink-0 items-start justify-between">
         <div>
           <p className="text-sm font-semibold text-white">Files</p>
           <p className="text-xs text-white/45">{repoFileCount} files</p>
@@ -233,7 +233,11 @@ export default function FileExplorer() {
         </div>
       </div>
 
-      <div className="flex flex-col gap-1">{tree.map((node) => renderNode(node))}</div>
+      <div className="custom-scroll min-h-0 flex-1 overflow-y-auto">
+        <div className="flex flex-col gap-1 pb-2">
+          {tree.map((node) => renderNode(node))}
+        </div>
+      </div>
     </div>
   );
 }

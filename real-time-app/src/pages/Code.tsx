@@ -4,8 +4,16 @@ import Toolbar from "@/components/Toolbar";
 import OutputToolbar from "@/components/OutputToolbar";
 import { useRopes } from "@/hooks/useRopes";
 import { useState } from "react";
+import {
+  DEFAULT_EDITOR_SETTINGS,
+  type EditorSettings,
+} from "@/lib/editorSettings";
 
-function Code() {
+type Props = {
+  editorSettings?: EditorSettings;
+};
+
+function Code({ editorSettings = DEFAULT_EDITOR_SETTINGS }: Props) {
   const [text, updateText, outputText, incomingOp, syncVersion, isSynced] =
     useRopes();
   const [responseText, setReviewText] = useState("");
@@ -25,6 +33,7 @@ function Code() {
             incomingOp={incomingOp}
             syncVersion={syncVersion}
             isSynced={isSynced}
+            editorSettings={editorSettings}
             id="mainInput"
           />
         </div>

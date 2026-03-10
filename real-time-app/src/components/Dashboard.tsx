@@ -136,7 +136,7 @@ export default function Dashboard({ user }: Props) {
 
   const noteCountLabel = useMemo(
     () => `${notes.length} note${notes.length === 1 ? "" : "s"}`,
-    [notes]
+    [notes],
   );
 
   const addNote = () => {
@@ -168,7 +168,8 @@ export default function Dashboard({ user }: Props) {
             <div>
               <h1>Welcome Back, {user}.</h1>
               <p className="mt-2 text-base text-white/55">
-                Active repositories, quick file access, and workspace notes in one place.
+                Active repositories, quick file access, and workspace notes in
+                one place.
               </p>
             </div>
             <div className="rounded-2xl bg-light-panel/80 px-4 py-3 text-sm text-white/60">
@@ -206,7 +207,9 @@ export default function Dashboard({ user }: Props) {
               <div className="mb-4 flex items-center justify-between">
                 <div>
                   <p className="text-xl text-white">Favorites</p>
-                  <p className="text-sm text-white/45">Pinned files you keep revisiting.</p>
+                  <p className="text-sm text-white/45">
+                    Pinned files you keep revisiting.
+                  </p>
                 </div>
                 <span className="rounded-full bg-white/6 px-3 py-1 text-xs uppercase tracking-[0.18em] text-accent">
                   {favoriteFiles.length}
@@ -273,7 +276,7 @@ export default function Dashboard({ user }: Props) {
                 addNote();
               }
             }}
-            placeholder="Add a note for this workspace..."
+            placeholder="Add a note..."
             className="w-full bg-transparent text-sm text-white/80 outline-none placeholder:text-white/30"
           />
         </div>

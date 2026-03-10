@@ -1,5 +1,10 @@
 import { useEffect, useRef } from "react";
-import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import {
+  Compartment,
+  EditorSelection,
+  EditorState,
+  type Extension,
+} from "@codemirror/state";
 import {
   EditorView,
   drawSelection,
@@ -11,10 +16,10 @@ import {
   defaultKeymap,
   history,
   historyKeymap,
-  indentWithTab,
   insertNewlineAndIndent,
 } from "@codemirror/commands";
 import type { RopeOperation } from "@/hooks/useRopes";
+import type { EditorSettings } from "@/lib/editorSettings";
 
 declare global {
   interface Window {
@@ -32,8 +37,100 @@ type Props = {
   incomingOp: RopeOperation[];
   syncVersion: number;
   isSynced: boolean;
+  editorSettings: EditorSettings;
   id: string;
 };
+
+function editorFontFamily(fontFamily: EditorSettings["fontFamily"]): string {
+  switch (fontFamily) {
+    case "JetBrains Mono":
+      return '"JetBrains Mono", "Fira Code", monospace';
+    case "Source Code Pro":
+      return '"Source Code Pro", "Fira Code", monospace';
+    case "IBM Plex Mono":
+      return '"IBM Plex Mono", "Fira Code", monospace';
+    default:
+      return '"Fira Code", monospace';
+  }
+}
+
+function buildEditorTheme(settings: EditorSettings) {
+  return EditorView.theme({
+    "&": {
+      height: "100%",
+      backgroundColor: "#030a0d",
+      color: "#d4d4d4",
+      fontFamily: editorFontFamily(settings.fontFamily),
+      fontSize: `${settings.fontSize}px`,
+    },
+    ".cm-scroller": {
+      overflow: "auto",
+      fontFamily: editorFontFamily(settings.fontFamily),
+      lineHeight: "24px",
+    },
+    ".cm-content, .cm-gutterElement": {
+      lineHeight: "24px",
+    },
+    ".cm-content": {
+      padding: "12px 0",
+      caretColor: "#d4d4d4",
+      minHeight: "100%",
+    },
+    ".cm-line": {
+      padding: "0 12px",
+    },
+    ".cm-gutters": {
+      backgroundColor: "#030a0d",
+      color: "#888",
+      borderRight: "2px solid #213030",
+    },
+    ".cm-activeLine, .cm-activeLineGutter": {
+      backgroundColor: "transparent",
+    },
+    ".cm-selectionBackground": {
+      backgroundColor: "#244b5a !important",
+    },
+    "&.cm-focused": {
+      outline: "none",
+    },
+    ".cm-cursor": {
+      borderLeftColor: "#d4d4d4",
+    },
+    "&.cm-editor.cm-readonly .cm-content": {
+      caretColor: "transparent",
+    },
+  });
+}
+
+function buildEditorKeymap(tabSize: number) {
+  const softTab = " ".repeat(tabSize);
+  return keymap.of([
+    {
+      key: "Tab",
+      run: ({ state, dispatch }) => {
+        const changes = state.changeByRange((range) => ({
+          changes: {
+            from: range.from,
+            to: range.to,
+            insert: softTab,
+          },
+          range: EditorSelection.cursor(range.from + softTab.length),
+        }));
+
+        dispatch(
+          state.update(changes, {
+            scrollIntoView: true,
+            userEvent: "input",
+          })
+        );
+        return true;
+      },
+    },
+    { key: "Enter", run: insertNewlineAndIndent },
+    ...defaultKeymap,
+    ...historyKeymap,
+  ]);
+}
 
 function Textbox({
   curText,
@@ -41,6 +138,7 @@ function Textbox({
   incomingOp,
   syncVersion,
   isSynced,
+  editorSettings,
   id,
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -49,6 +147,9 @@ function Textbox({
   const processedIncomingOps = useRef(0);
   const submitOpsRef = useRef(setText);
   const editableCompartmentRef = useRef(new Compartment());
+  const editorThemeCompartmentRef = useRef(new Compartment());
+  const tabSizeCompartmentRef = useRef(new Compartment());
+  const keymapCompartmentRef = useRef(new Compartment());
 
   const applyOpToText = (baseText: string, op: RopeOperation) => {
     if (op.type === "insert") {
@@ -139,65 +240,17 @@ function Textbox({
       return;
     }
 
-    const editorTheme = EditorView.theme({
-      "&": {
-        height: "100%",
-        backgroundColor: "#030a0d",
-        color: "#d4d4d4",
-        fontFamily: '"Fira Code", monospace',
-        fontSize: "0.875rem",
-      },
-      ".cm-scroller": {
-        overflow: "auto",
-        fontFamily: '"Fira Code", monospace',
-        lineHeight: "24px",
-      },
-      ".cm-content, .cm-gutterElement": {
-        lineHeight: "24px",
-      },
-      ".cm-content": {
-        padding: "12px 0",
-        caretColor: "#d4d4d4",
-        minHeight: "100%",
-      },
-      ".cm-line": {
-        padding: "0 12px",
-      },
-      ".cm-gutters": {
-        backgroundColor: "#030a0d",
-        color: "#888",
-        borderRight: "2px solid #213030",
-      },
-      ".cm-activeLine, .cm-activeLineGutter": {
-        backgroundColor: "transparent",
-      },
-      ".cm-selectionBackground": {
-        backgroundColor: "#244b5a !important",
-      },
-      "&.cm-focused": {
-        outline: "none",
-      },
-      ".cm-cursor": {
-        borderLeftColor: "#d4d4d4",
-      },
-      "&.cm-editor.cm-readonly .cm-content": {
-        caretColor: "transparent",
-      },
-    });
-
     const extensions: Extension[] = [
       editableCompartmentRef.current.of(EditorView.editable.of(isSynced)),
+      editorThemeCompartmentRef.current.of(buildEditorTheme(editorSettings)),
       lineNumbers(),
       history(),
       drawSelection(),
       highlightActiveLine(),
-      keymap.of([
-        { key: "Enter", run: insertNewlineAndIndent },
-        ...defaultKeymap,
-        ...historyKeymap,
-        indentWithTab,
-      ]),
-      EditorState.tabSize.of(4),
+      keymapCompartmentRef.current.of(buildEditorKeymap(editorSettings.tabSize)),
+      tabSizeCompartmentRef.current.of(
+        EditorState.tabSize.of(editorSettings.tabSize)
+      ),
       EditorView.updateListener.of((update) => {
         if (!update.docChanged || suppressDispatchRef.current) {
           return;
@@ -261,7 +314,6 @@ function Textbox({
           submitOpsRef.current(ops);
         }
       }),
-      editorTheme,
     ];
 
     viewRef.current = new EditorView({
@@ -278,6 +330,9 @@ function Textbox({
     view.contentDOM.setAttribute("autocorrect", "off");
     view.contentDOM.setAttribute("autocapitalize", "off");
     view.contentDOM.setAttribute("data-gramm", "false");
+    hostRef.current?.setAttribute("data-editor-font-size", `${editorSettings.fontSize}`);
+    hostRef.current?.setAttribute("data-editor-font-family", editorSettings.fontFamily);
+    hostRef.current?.setAttribute("data-editor-tab-size", `${editorSettings.tabSize}`);
     publishDocText(view.state.doc.toString());
     publishEvent("mount", view.state.doc.toString());
 
@@ -425,6 +480,40 @@ function Textbox({
       ),
     });
   }, [isSynced]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+
+    view.dispatch({
+      effects: [
+        editorThemeCompartmentRef.current.reconfigure(
+          buildEditorTheme(editorSettings)
+        ),
+        tabSizeCompartmentRef.current.reconfigure(
+          EditorState.tabSize.of(editorSettings.tabSize)
+        ),
+        keymapCompartmentRef.current.reconfigure(
+          buildEditorKeymap(editorSettings.tabSize)
+        ),
+      ],
+    });
+
+    hostRef.current?.setAttribute(
+      "data-editor-font-size",
+      `${editorSettings.fontSize}`
+    );
+    hostRef.current?.setAttribute(
+      "data-editor-font-family",
+      editorSettings.fontFamily
+    );
+    hostRef.current?.setAttribute(
+      "data-editor-tab-size",
+      `${editorSettings.tabSize}`
+    );
+  }, [editorSettings]);
 
   return (
     <div className="flex h-full min-h-0 flex-row overflow-hidden rounded border-2 border-[#213030] md:rounded-r-none">

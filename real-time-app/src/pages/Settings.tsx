@@ -1,150 +1,155 @@
-import { useState } from "react";
+import type React from "react";
+import {
+  FONT_FAMILY_OPTIONS,
+  clampFontSize,
+  clampTabSize,
+  type EditorSettings,
+} from "@/lib/editorSettings";
 
-export default function Settings() {
-  const [fontSize, setFontSize] = useState("14");
-  const [fontFamily, setFontFamily] = useState("Fira Code");
-  const [tabSize, setTabSize] = useState("4");
-  const [autosaveEnabled, setAutosaveEnabled] = useState(true);
-  const [autosaveInterval, setAutosaveInterval] = useState("5");
-  const [defaultPerm, setDefaultPerm] = useState("View");
-  const [theme, setTheme] = useState("Dark");
-  const [keybind, setKeybind] = useState("VSCode");
+type Props = {
+  editorSettings: EditorSettings;
+  setEditorSettings: React.Dispatch<React.SetStateAction<EditorSettings>>;
+};
+
+export default function Settings({
+  editorSettings,
+  setEditorSettings,
+}: Props) {
+  const updateFontSize = (value: string) => {
+    setEditorSettings((prev) => ({
+      ...prev,
+      fontSize: clampFontSize(Number(value)),
+    }));
+  };
+
+  const updateFontFamily = (value: EditorSettings["fontFamily"]) => {
+    setEditorSettings((prev) => ({
+      ...prev,
+      fontFamily: value,
+    }));
+  };
+
+  const updateTabSize = (value: string) => {
+    setEditorSettings((prev) => ({
+      ...prev,
+      tabSize: clampTabSize(Number(value)),
+    }));
+  };
 
   return (
-    <div className="p-4 text-white font-fira space-y-10">
-      <h1 className="text-3xl font-bold">Settings</h1>
+    <div className="mx-auto flex w-full max-w-5xl flex-col gap-10 p-6 font-fira text-white">
+      <header className="max-w-2xl space-y-3">
+        <p className="text-sm uppercase tracking-[0.24em] text-accent/80">
+          Workspace settings
+        </p>
+        <h1 className="text-4xl leading-tight text-white">Editor preferences</h1>
+        <p className="text-base leading-8 text-white/55">
+          These settings apply to the code editor inside this workspace.
+        </p>
+      </header>
 
-      {/* Profile */}
-      <section>
-        <h2 className="text-xl mb-4">Profile</h2>
-        <div className="grid md:grid-cols-2 gap-6">
+      <section className="rounded-3xl border border-Cborder bg-panel/80 p-6">
+        <div className="grid gap-6 md:grid-cols-3">
           <div>
-            <label className="block text-sm mb-1">Font Size</label>
+            <label
+              htmlFor="workspace-font-size"
+              className="mb-2 block text-sm text-white/70"
+            >
+              Font size
+            </label>
             <div className="relative">
               <input
-                value={fontSize}
-                onChange={(e) => setFontSize(e.target.value)}
-                className="bg-light-panel text-white px-3 py-2 pr-10 rounded outline-none w-full"
+                id="workspace-font-size"
+                type="number"
+                min={12}
+                max={24}
+                step={1}
+                value={editorSettings.fontSize}
+                onChange={(e) => updateFontSize(e.target.value)}
+                className="input-number-clean w-full rounded-xl border border-Cborder bg-light-panel px-3 py-3 pr-12 text-white outline-none"
               />
-              <span className="absolute right-3 top-2.5 text-gray-400 text-sm">
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-white/35">
                 px
               </span>
             </div>
           </div>
+
           <div>
-            <label className="block text-sm mb-1">Font Family</label>
+            <label
+              htmlFor="workspace-font-family"
+              className="mb-2 block text-sm text-white/70"
+            >
+              Font family
+            </label>
+            <div className="relative">
+              <select
+                id="workspace-font-family"
+                value={editorSettings.fontFamily}
+                onChange={(e) =>
+                  updateFontFamily(e.target.value as EditorSettings["fontFamily"])
+                }
+                className="w-full appearance-none rounded-xl border border-Cborder bg-light-panel px-3 py-3 pr-10 text-white outline-none"
+              >
+                {FONT_FAMILY_OPTIONS.map((font) => (
+                  <option key={font} value={font}>
+                    {font}
+                  </option>
+                ))}
+              </select>
+              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-white/45">
+                {"\u25BC"}
+              </span>
+            </div>
+          </div>
+
+          <div>
+            <label
+              htmlFor="workspace-tab-size"
+              className="mb-2 block text-sm text-white/70"
+            >
+              Tab size
+            </label>
             <input
-              value={fontFamily}
-              onChange={(e) => setFontFamily(e.target.value)}
-              className="bg-light-panel text-white px-3 py-2 rounded outline-none w-full"
+              id="workspace-tab-size"
+              type="number"
+              min={2}
+              max={8}
+              step={1}
+              value={editorSettings.tabSize}
+              onChange={(e) => updateTabSize(e.target.value)}
+              className="input-number-clean w-full rounded-xl border border-Cborder bg-light-panel px-3 py-3 text-white outline-none"
             />
           </div>
         </div>
       </section>
 
-      {/* Appearance */}
-      <section>
-        <h2 className="text-xl mb-4">Appearance</h2>
-        <div className="grid md:grid-cols-2 gap-6">
-          <div>
-            <label className="block text-sm mb-1">Theme</label>
-            <div className="relative">
-              <select
-                value={theme}
-                onChange={(e) => setTheme(e.target.value)}
-                className="bg-light-panel text-white px-3 py-2 pr-10 rounded w-full appearance-none focus:outline-none"
-              >
-                <option>Dark</option>
-                <option>Light</option>
-              </select>
-              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-white/50 text-xs">
-                {"\u25BC"}
-              </span>
-            </div>
+      <section className="rounded-3xl border border-Cborder bg-panel/60 p-6">
+        <div className="mb-4">
+          <h2 className="text-2xl text-white">Other settings</h2>
+          <p className="mt-2 text-sm text-white/45">
+            These are placeholders for future workspace preferences.
+          </p>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-2xl border border-Cborder bg-light-panel/60 p-4">
+            <p className="text-sm uppercase tracking-[0.18em] text-white/35">Theme</p>
+            <p className="mt-3 text-white/75">Dark</p>
           </div>
-          <div>
-            <label className="block text-sm mb-1">Key Bindings</label>
-            <div className="relative">
-              <select
-                value={keybind}
-                onChange={(e) => setKeybind(e.target.value)}
-                className="bg-light-panel text-white px-3 py-2 pr-10 rounded w-full appearance-none focus:outline-none"
-              >
-                <option>VSCode</option>
-                <option>Emacs</option>
-                <option>Vim</option>
-              </select>
-              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-white/50 text-xs">
-                {"\u25BC"}
-              </span>
-            </div>
+          <div className="rounded-2xl border border-Cborder bg-light-panel/60 p-4">
+            <p className="text-sm uppercase tracking-[0.18em] text-white/35">Key bindings</p>
+            <p className="mt-3 text-white/75">VSCode</p>
+          </div>
+          <div className="rounded-2xl border border-Cborder bg-light-panel/60 p-4">
+            <p className="text-sm uppercase tracking-[0.18em] text-white/35">Autosave</p>
+            <p className="mt-3 text-white/75">Mocked</p>
+          </div>
+          <div className="rounded-2xl border border-Cborder bg-light-panel/60 p-4">
+            <p className="text-sm uppercase tracking-[0.18em] text-white/35">Permissions</p>
+            <p className="mt-3 text-white/75">Mocked</p>
           </div>
         </div>
       </section>
-
-      {/* Editor */}
-      <section>
-        <h2 className="text-xl mb-4">Editor</h2>
-        <div className="grid md:grid-cols-2 gap-6">
-          <div>
-            <label className="block text-sm mb-1">Tab Size</label>
-            <input
-              value={tabSize}
-              onChange={(e) => setTabSize(e.target.value)}
-              className="bg-light-panel text-white px-3 py-2 rounded w-full outline-none"
-            />
-          </div>
-          <div>
-            <label className="block text-sm mb-1">Default Permissions</label>
-            <div className="relative">
-              <select
-                value={defaultPerm}
-                onChange={(e) => setDefaultPerm(e.target.value)}
-                className="bg-light-panel text-white px-3 py-2 pr-10 rounded w-full focus:outline-none
- appearance-none"
-              >
-                <option>View</option>
-                <option>Edit</option>
-                <option>No Access</option>
-              </select>
-              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-white/50 text-xs">
-                {"\u25BC"}
-              </span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {/* Autosave */}
-      <section>
-        <h2 className="text-xl mb-4">Autosave</h2>
-        <div className="flex items-center gap-6 flex-wrap">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={autosaveEnabled}
-              onChange={() => setAutosaveEnabled(!autosaveEnabled)}
-              className="accent-tab-active w-4 h-4"
-            />
-            Autosave Files
-          </label>
-          {autosaveEnabled && (
-            <div>
-              <label className="block text-sm mb-1">Interval (minutes)</label>
-              <input
-                type="number"
-                value={autosaveInterval}
-                onChange={(e) => setAutosaveInterval(e.target.value)}
-                className="bg-light-panel text-white px-3 py-2 rounded w-24"
-              />
-            </div>
-          )}
-        </div>
-      </section>
-
-      <button className="bg-tab-active hover:bg-run-hover active:bg-run px-6 py-2 rounded text-black font-semibold hover:opacity-90 transition">
-        Save Changes
-      </button>
     </div>
   );
 }

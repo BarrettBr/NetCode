@@ -5,6 +5,11 @@ import settingsIcon from "@/assets/settings.svg";
 import Code from "@/pages/Code";
 import Settings from "@/pages/Settings";
 import Sidebar from "@/components/Sidebar";
+import {
+  DEFAULT_EDITOR_SETTINGS,
+  type EditorSettings,
+} from "@/lib/editorSettings";
+import { useState } from "react";
 
 type Props = {
   currentSite: string;
@@ -12,6 +17,8 @@ type Props = {
 };
 
 export default function Workspace({ currentSite, setSite }: Props) {
+  const [editorSettings, setEditorSettings] =
+    useState<EditorSettings>(DEFAULT_EDITOR_SETTINGS);
   const buttonClass = (active: boolean) =>
     `flex h-11 w-full select-none items-center rounded-xl px-4 transition ${
       active ? "bg-light-panel border border-Cborder" : "border border-transparent hover:bg-light-panel/60"
@@ -62,8 +69,13 @@ export default function Workspace({ currentSite, setSite }: Props) {
       {/* Main Content */}
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-bg">
         {currentSite === "dash" && <Dashboard user="Barrett" />}
-        {currentSite === "code" && <Code />}
-        {currentSite === "settings" && <Settings />}
+        {currentSite === "code" && <Code editorSettings={editorSettings} />}
+        {currentSite === "settings" && (
+          <Settings
+            editorSettings={editorSettings}
+            setEditorSettings={setEditorSettings}
+          />
+        )}
       </div>
     </div>
   );
