@@ -1,15 +1,19 @@
 // hooks/WebSocketContext.tsx
-import React, { createContext, useContext, useEffect, useRef } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useRef } from "react";
 import { AppConfig } from "@/config";
-
-console.log(AppConfig.roomId);
 
 /* 
   Create a WebSocket context using React Context API.
   This allows components across the app to access a shared WebSocket connection.
 */
-const WebSocketContext =
-  createContext<React.MutableRefObject<WebSocket | null> | null>(null);
+type MessageListener = (event: MessageEvent<string>) => void;
+
+type WebSocketContextValue = {
+  socketRef: React.MutableRefObject<WebSocket | null>;
+  subscribe: (listener: MessageListener) => () => void;
+};
+
+const WebSocketContext = createContext<WebSocketContextValue | null>(null);
 
 /* 
   WebSocketProvider Component:
@@ -26,29 +30,57 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const socketRef = useRef<WebSocket | null>(null);
+  const listenersRef = useRef(new Set<MessageListener>());
+  const backlogRef = useRef<MessageEvent<string>[]>([]);
+
+  const contextValue = useMemo<WebSocketContextValue>(
+    () => ({
+      socketRef,
+      subscribe: (listener) => {
+        listenersRef.current.add(listener);
+
+        if (backlogRef.current.length > 0) {
+          const backlog = backlogRef.current;
+          backlogRef.current = [];
+          for (const event of backlog) {
+            listener(event);
+          }
+        }
+
+        return () => {
+          listenersRef.current.delete(listener);
+        };
+      },
+    }),
+    []
+  );
 
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const hostname = window.location.hostname;
     const port = window.location.protocol === "https:" ? "" : ":9090";
     const url = `${protocol}//${hostname}${port}/api/ws?room=${AppConfig.roomId}`;
-    socketRef.current = new WebSocket(url);
-
-    socketRef.current.onopen = () => {
-      console.log("Connected");
-    };
-
-    socketRef.current.onclose = () => {
-      console.log("Disconnected");
-    };
+    const socket = new WebSocket(url);
+    socket.addEventListener("message", (event) => {
+      if (listenersRef.current.size === 0) {
+        backlogRef.current.push(event as MessageEvent<string>);
+        return;
+      }
+      for (const listener of listenersRef.current) {
+        listener(event as MessageEvent<string>);
+      }
+    });
+    socketRef.current = socket;
 
     return () => {
+      backlogRef.current = [];
       socketRef.current?.close();
+      socketRef.current = null;
     };
   }, []);
 
   return (
-    <WebSocketContext.Provider value={socketRef}>
+    <WebSocketContext.Provider value={contextValue}>
       {children}
     </WebSocketContext.Provider>
   );

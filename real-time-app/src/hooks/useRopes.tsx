@@ -1,13 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useWS } from "@/hooks/WebSocketContext";
-import RopeSequence from "rope-sequence";
 
-/* 
-  Define and export RopeOperation type.
-  This represents the possible operations that can be sent/received via WebSocket:
-    - Insert a value at a position
-    - Delete a range from 'from' to 'to'
-*/
 export type RopeOperation =
   | {
       event: "text_update";
@@ -26,277 +19,326 @@ export type RopeOperation =
       author: number;
     };
 
-/* 
-  Custom hook useRopes
-  Provides:
-    - rope-backed state management for input text
-    - real-time collaborative editing via WebSocket
-    - synchronized output text from code execution
+function cloneOp(op: RopeOperation): RopeOperation {
+  return op.type === "insert" ? { ...op } : { ...op };
+}
 
-  Functions:
-    - applyOp: Applies the rope operation and updates the textbox/internal rope
-    - ropeToString: Flattens the rope and converts it to a string, used to set textbox
-    - setInitialText: Sets textbox upon connection/reconnection for use with syncing to environment
-    - updateText: Update rope based on user input changes, Calculates difference and creates a minimal operation (insert/delete), Then broadcasts the operation via WebSocket
-    - useEffect: Used to do websocket communication: syncing of content and listening to changes from other users in the same room
-    - setIncomingOp: used to set variable to whatever incoming operation is happening
+function normalizeOp(op: RopeOperation | null): RopeOperation | null {
+  if (!op) {
+    return null;
+  }
+  if (op.type === "insert") {
+    return op.value.length > 0 ? op : null;
+  }
+  return op.to > op.from ? op : null;
+}
 
-  Dependencies:
-    - useWS: Websocket Context
-    - useEffect: For websocket listening
-    - useRef: Rope reference
-    - useState: used for setting textbox/output box
-    - RopeSequence for handling the rope data structure
+function authorPrecedes(left: number, right: number): boolean {
+  return left < right;
+}
 
-  Returns:
-    [inputText, updateInputText, outputText]
-*/
+function transformAgainstHistory(incoming: RopeOperation, history: RopeOperation): RopeOperation | null {
+  const next = cloneOp(incoming);
+
+  if (next.type === "insert" && history.type === "insert") {
+    const historyLen = history.value.length;
+    if (
+      history.pos < next.pos ||
+      (history.pos === next.pos && authorPrecedes(history.author, next.author))
+    ) {
+      next.pos += historyLen;
+    }
+    return normalizeOp(next);
+  }
+
+  if (next.type === "insert" && history.type === "delete") {
+    const historyLen = history.to - history.from;
+    if (history.to <= next.pos) {
+      next.pos -= historyLen;
+    } else if (next.pos >= history.from) {
+      next.pos = history.from;
+    }
+    return normalizeOp(next);
+  }
+
+  if (next.type === "delete" && history.type === "insert") {
+    const historyLen = history.value.length;
+    if (history.pos <= next.from) {
+      next.from += historyLen;
+      next.to += historyLen;
+    } else if (history.pos < next.to) {
+      next.to += historyLen;
+    }
+    return normalizeOp(next);
+  }
+
+  if (next.type === "delete" && history.type === "delete") {
+    const removedBefore = (pos: number) => {
+      if (pos <= history.from) {
+        return 0;
+      }
+      if (pos >= history.to) {
+        return history.to - history.from;
+      }
+      return pos - history.from;
+    };
+
+    const newFrom = next.from - removedBefore(next.from);
+    const newTo = next.to - removedBefore(next.to);
+    next.from = Math.max(0, newFrom);
+    next.to = Math.max(next.from, newTo);
+  }
+
+  return normalizeOp(next);
+}
+
+function transformConcurrentPair(
+  pending: RopeOperation,
+  incoming: RopeOperation
+): [RopeOperation | null, RopeOperation | null] {
+  const rebasedPending = transformAgainstHistory(pending, incoming);
+  const rebasedIncoming = transformAgainstHistory(incoming, pending);
+  return [rebasedPending, rebasedIncoming];
+}
+
+function applyOpToText(baseText: string, op: RopeOperation): string {
+  if (op.type === "insert") {
+    const position = Math.max(0, Math.min(op.pos, baseText.length));
+    return baseText.slice(0, position) + op.value + baseText.slice(position);
+  }
+
+  const from = Math.max(0, Math.min(op.from, baseText.length));
+  const to = Math.max(from, Math.min(op.to, baseText.length));
+  return baseText.slice(0, from) + baseText.slice(to);
+}
+
 export function useRopes(): [
   string,
-  (newText: string) => void,
+  (ops: RopeOperation[]) => void,
   string,
-  RopeOperation[]
+  RopeOperation[],
+  number,
+  boolean
 ] {
-  const rope = useRef(RopeSequence.empty as RopeSequence<string>); // Create rope
-  const [text, setText] = useState(""); // Create text for use in setting textbox
-  const [outputText, setOutput] = useState(""); // Set output box
-  const [incomingOp, setIncomingOp] = useState<RopeOperation[]>([]); // Set for use with passing & dealing with operation length adjustments
-  const localVersion = useRef(0); // Used for operational transformations
+  const MAX_CURSOR_OPS = 300;
+  const textRef = useRef("");
+  const pendingOpsRef = useRef<RopeOperation[]>([]);
+  const bufferedOpsRef = useRef<RopeOperation[]>([]);
+  const serverVersionRef = useRef(0);
   const localUID = useRef(0);
-  const socket = useWS(); // Connect to context web socket
-  const debug: boolean = true; // Boolean used for debugging
+  const hasInitialSyncRef = useRef(false);
 
-  /* 
-    Apply a rope operation (insert/delete) to the current rope
-    Updates both internal rope and textbox string state
-  */
-  const applyOp = (op: RopeOperation, version_mismatch_present: boolean) => {
-    let curRope = rope.current;
-    setIncomingOp((oldArray) => [...oldArray, op]); // Set for use with other components
-    if (version_mismatch_present) {
-      console.log(
-        `Version mismatch detected. Local: ${localVersion.current}, Received: ${op.version}`
-      );
-    }
-    // Check op type and then append new value where it needs to go
-    if (op.type === "insert") {
-      const before = curRope.slice(0, op.pos);
-      const after = curRope.slice(op.pos);
-      curRope = before.append(Array.from(op.value)).append(after);
-    } else if (op.type === "delete") {
-      const before = curRope.slice(0, op.from);
-      const after = curRope.slice(op.to);
-      curRope = before.append(after);
-    }
+  const [text, setText] = useState("");
+  const [outputText, setOutput] = useState("");
+  const [incomingOp, setIncomingOp] = useState<RopeOperation[]>([]);
+  const [syncVersion, setSyncVersion] = useState(0);
+  const [isSynced, setIsSynced] = useState(false);
 
-    rope.current = curRope;
-    const curText = ropeToString(rope.current);
-    setText(curText);
-  };
+  const { socketRef, subscribe } = useWS();
+  const debug = false;
 
-  /* 
-    Convert a rope data structure into a flat string
-    Used to render rope content to input textbox
-  */
-  function ropeToString(rope: RopeSequence<string>): string {
-    const flattened: string[] = [];
-    rope.forEach((value: string) => {
-      flattened.push(value);
-    });
-    return flattened.join("");
-  }
-
-  /* 
-    Set initial text in the rope and input state
-    Used on new connection or reconnection to sync data
-  */
-  function setInitialText(newText: string) {
-    rope.current = RopeSequence.from(Array.from(newText));
+  function setSnapshotText(newText: string) {
+    textRef.current = newText;
+    pendingOpsRef.current = [];
     setText(newText);
+    setSyncVersion((value) => value + 1);
   }
 
-  /* 
-    Update rope based on user input changes
-    Calculates difference and creates a minimal operation (insert/delete)
-    Then broadcasts the operation via WebSocket
-  */
-  function updateText(
-    newText: string,
-    forceTab?: {
-      force: boolean;
-      start: number;
-      end: number;
-      replacement: string;
-    }
-  ) {
-    if (forceTab?.force) {
-      const before = rope.current.slice(0, forceTab.start);
-      const after = rope.current.slice(forceTab.end);
-      const middle = RopeSequence.from(Array.from(forceTab.replacement));
-      rope.current = before.append(middle).append(after);
-      const curText = ropeToString(rope.current);
-      setText(curText);
-      socket.current?.send(
-        JSON.stringify({
-          event: "text_update",
-          type: "insert", // Could do "replace" for new type later if needed
-          pos: forceTab.start,
-          value: forceTab.replacement,
-          from: forceTab.start,
-          to: forceTab.end,
-          version: localVersion.current,
-          author: localUID.current,
-        })
+  function queueRemoteOp(op: RopeOperation) {
+    setIncomingOp((oldArray) => {
+      const next = [...oldArray, op];
+      return next.length > MAX_CURSOR_OPS
+        ? next.slice(next.length - MAX_CURSOR_OPS)
+        : next;
+    });
+  }
+
+  function rebaseIncomingAgainstPending(op: RopeOperation): RopeOperation | null {
+    let rebasedIncoming: RopeOperation | null = cloneOp(op);
+    const nextPending: RopeOperation[] = [];
+
+    for (const pending of pendingOpsRef.current) {
+      if (!rebasedIncoming) {
+        nextPending.push(pending);
+        continue;
+      }
+
+      const [rebasedPending, nextIncoming] = transformConcurrentPair(
+        pending,
+        rebasedIncoming
       );
-      localVersion.current++;
+      if (rebasedPending) {
+        nextPending.push(rebasedPending);
+      }
+      rebasedIncoming = nextIncoming;
+    }
+
+    pendingOpsRef.current = nextPending;
+    return rebasedIncoming;
+  }
+
+  function sendOperation(op: RopeOperation) {
+    const ws = socketRef.current;
+    if (!hasInitialSyncRef.current || !ws || ws.readyState !== WebSocket.OPEN) {
+      bufferedOpsRef.current.push(cloneOp(op));
       return;
     }
 
-    const oldText = ropeToString(rope.current);
+    const outbound = cloneOp(op);
+    outbound.version = serverVersionRef.current + pendingOpsRef.current.length;
+    outbound.author = localUID.current;
+    pendingOpsRef.current.push(outbound);
+    ws.send(JSON.stringify(outbound));
+  }
 
-    // Progress i to where text is different
-    let i = 0;
-    while (
-      i < newText.length &&
-      i < oldText.length &&
-      newText[i] === oldText[i]
-    ) {
-      i++;
+  function flushBufferedOperations() {
+    const ws = socketRef.current;
+    if (!hasInitialSyncRef.current || !ws || ws.readyState !== WebSocket.OPEN) {
+      return;
     }
 
-    let op: RopeOperation;
-
-    if (oldText.length > newText.length) {
-      // Deletion
-      let difference = oldText.length - newText.length; // Find the amount deleted
-      op = {
-        event: "text_update",
-        type: "delete",
-        from: i,
-        to: i + difference,
-        version: localVersion.current,
-        author: localUID.current,
-      };
-    } else {
-      // Insertion
-      const inserted = newText.slice(i, newText.length - (oldText.length - i)); // Find length of what to insert
-      op = {
-        event: "text_update",
-        type: "insert",
-        pos: i,
-        value: inserted,
-        version: localVersion.current,
-        author: localUID.current,
-      };
+    const bufferedOps = bufferedOpsRef.current;
+    if (bufferedOps.length === 0) {
+      return;
     }
+    bufferedOpsRef.current = [];
 
-    applyOp(op, false);
-    socket.current?.send(JSON.stringify(op)); // Pass op to others
-    localVersion.current++;
-
-    if (debug) {
-      console.log(`Local version incremented to ${localVersion.current}`);
+    for (const op of bufferedOps) {
+      sendOperation(op);
     }
   }
 
-  /* 
-    useEffect to handle WebSocket communication
-    - Listens for and responds to messages from server
-    - Handles: input updates, output updates, and syncing on connection
-  */
-  useEffect(() => {
-    // Create interval variable
-    let interval: ReturnType<typeof setInterval>;
-
-    // Function for when attached
-    function attachOnMessage(ws: WebSocket) {
-      if (debug)
-        console.log("WebSocket connected, attaching onmessage handler");
-
-      //socket.current?.send("one");
-
-      ws.onmessage = (e) => {
-        const data = JSON.parse(e.data);
-
-        // Debugging statements
-        if (debug) {
-          console.log("Parsed Socket data", data);
-          console.log("Data", data.event);
-        }
-
-        const op: RopeOperation = data.update;
-
-        // Switch statement to tell event from front-end
-        switch (data.event) {
-          case "input_update": // User text update
-            applyOp(op, false);
-            break;
-          case "version_mismatch_update":
-            applyOp(op, true);
-            console.log(
-              `VERSION MISMATCH HANDLED:\nLOCAL: ${localVersion.current}\nSERVER: ${data.update.version}`
-            );
-            localVersion.current = data.update.version;
-            break;
-          case "output_update": // User click run
-            setOutput(data.update);
-            break;
-          case "connection_update": // User connects and needs to update data in input
-            if (typeof data.update.text === "string") {
-              setInitialText(data.update.text);
-            } else {
-              console.log(
-                "Connection update text not recieved as a string:",
-                data.update.text
-              ); // Debug line
-            }
-            if (
-              typeof data.update.version === "number" &&
-              Number(localVersion.current) === 0
-            ) {
-              localVersion.current = data.update.version;
-            } else {
-              console.log(
-                "Connection update version not recieved as a number:",
-                data.update.version
-              ); // Debug line
-            }
-            if (typeof data.update.uid === "number") {
-              localUID.current = data.update.uid;
-            } else {
-              console.log(
-                "Connection update uid not recieved as a number:",
-                data.update.uid
-              );
-            }
-            break;
-          default:
-            console.warn("Unknown WebSocket event:", data);
-        }
-      };
+  const submitLocalOps = useCallback((ops: RopeOperation[]) => {
+    if (ops.length === 0) {
+      return;
     }
 
-    // Connect to websocket, if not connected wait interval and try again
-    const tryAttach = () => {
-      const ws = socket.current;
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        attachOnMessage(ws);
-        clearInterval(interval);
+    let nextText = textRef.current;
+    for (const op of ops) {
+      nextText = applyOpToText(nextText, op);
+      sendOperation(op);
+    }
+    textRef.current = nextText;
+    setText(nextText);
+    flushBufferedOperations();
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = subscribe((event) => {
+      const data = JSON.parse(event.data);
+
+      switch (data.event) {
+        case "input_update": {
+          const inputOp = data.update as RopeOperation;
+          if (typeof inputOp?.version === "number") {
+            serverVersionRef.current = Math.max(
+              serverVersionRef.current,
+              inputOp.version
+            );
+          }
+
+          const isRemoteInput =
+            typeof inputOp.author === "number"
+              ? inputOp.author !== localUID.current
+              : true;
+          if (!isRemoteInput) {
+            break;
+          }
+
+          const rebasedOp = rebaseIncomingAgainstPending(inputOp);
+          if (!rebasedOp) {
+            break;
+          }
+
+          textRef.current = applyOpToText(textRef.current, rebasedOp);
+          setText(textRef.current);
+          queueRemoteOp(rebasedOp);
+          break;
+        }
+        case "version_mismatch_update": {
+          const mismatchOp = data.update as RopeOperation;
+          const isRemoteMismatch =
+            typeof mismatchOp.author === "number"
+              ? mismatchOp.author !== localUID.current
+              : true;
+          if (!isRemoteMismatch) {
+            if (typeof mismatchOp?.version === "number") {
+              serverVersionRef.current = mismatchOp.version;
+            }
+            break;
+          }
+
+          if (typeof mismatchOp?.version === "number") {
+            serverVersionRef.current = Math.max(
+              serverVersionRef.current,
+              mismatchOp.version
+            );
+          }
+
+          const rebasedOp = rebaseIncomingAgainstPending(mismatchOp);
+          if (!rebasedOp) {
+            break;
+          }
+
+          textRef.current = applyOpToText(textRef.current, rebasedOp);
+          setText(textRef.current);
+          queueRemoteOp(rebasedOp);
+          break;
+        }
+        case "version_ack": {
+          if (pendingOpsRef.current.length > 0) {
+            pendingOpsRef.current = pendingOpsRef.current.slice(1);
+          }
+          if (typeof data.update?.version === "number") {
+            serverVersionRef.current = Math.max(
+              serverVersionRef.current,
+              data.update.version
+            );
+          }
+          flushBufferedOperations();
+          break;
+        }
+        case "output_update":
+          setOutput(data.update);
+          break;
+        case "connection_update": {
+          if (typeof data.update.version === "number") {
+            serverVersionRef.current = data.update.version;
+          }
+          if (typeof data.update.uid === "number") {
+            localUID.current = data.update.uid;
+          }
+          if (typeof data.update.text === "string") {
+            setIncomingOp([]);
+            setSnapshotText(data.update.text);
+          }
+          hasInitialSyncRef.current = true;
+          setIsSynced(true);
+          flushBufferedOperations();
+          break;
+        }
+        case "resync_update": {
+          if (typeof data.update?.text === "string") {
+            setIncomingOp([]);
+            setSnapshotText(data.update.text);
+          }
+          if (typeof data.update?.version === "number") {
+            serverVersionRef.current = data.update.version;
+          }
+          hasInitialSyncRef.current = true;
+          setIsSynced(true);
+          flushBufferedOperations();
+          break;
+        }
+        default:
+          if (debug) {
+            console.warn("Unknown WebSocket event:", data);
+          }
       }
-    };
+    });
 
-    // Keep retrying connection every 100ms
-    tryAttach(); // Try immediately
-    interval = setInterval(tryAttach, 100); // Retry every 100ms
+    return unsubscribe;
+  }, [subscribe]);
 
-    return () => clearInterval(interval); // Cleanup
-  }, [socket.current]);
-
-  /*
-    Return hook values:
-    - text: Current input text for editor
-    - updateText: Function to update input text (and sync)
-    - outputText: Output text to be shown in terminal/review panel
-  */
-  return [text, updateText, outputText, incomingOp];
+  return [text, submitLocalOps, outputText, incomingOp, syncVersion, isSynced];
 }

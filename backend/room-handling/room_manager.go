@@ -6,7 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
-	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -23,11 +23,15 @@ type Room struct {
 	connIDs           map[*websocket.Conn]int
 	nextUID           int
 	con_mu            sync.Mutex
+	op_mu             sync.Mutex
 	serverText        *rope.Rope
 	text_mu           sync.RWMutex
 	version           uint64
+	historyBase       uint64
 	history           []map[string]any
 }
+
+const maxHistoryOps = 4096
 
 // This is used for tracking the history of operations for the operational transformations
 type Operation struct {
@@ -87,7 +91,8 @@ func (manager *RoomManager) CreateRoom(roomid string) *Room {
 		ID:                roomid,
 		activeConnections: make(map[*websocket.Conn]bool),
 		connIDs:           make(map[*websocket.Conn]int),
-		serverText:        nil,
+		serverText:        rope.New(""),
+		history:           make([]map[string]any, 0),
 		nextUID:           0,
 	}
 	return manager.Rooms[roomid]
@@ -115,7 +120,19 @@ func (manager *RoomManager) GetRoom(id string) (*Room, bool) {
 func (room *Room) getText() string {
 	room.text_mu.RLock()
 	defer room.text_mu.RUnlock()
+	if room.serverText == nil || room.serverText.Len() == 0 {
+		return ""
+	}
 	return room.serverText.String()
+}
+
+func (room *Room) getTextLen() int {
+	room.text_mu.RLock()
+	defer room.text_mu.RUnlock()
+	if room.serverText == nil {
+		return 0
+	}
+	return room.serverText.Len()
 }
 
 /* This function is the entry point for any HTTP API requests we recieve such as running the code
@@ -192,94 +209,222 @@ func (room *Room) broadcastUpdate(startconn *websocket.Conn, event string, messa
 	}
 }
 
+func (room *Room) sendUpdateToConnection(conn *websocket.Conn, event string, update interface{}) {
+	room.con_mu.Lock()
+	defer room.con_mu.Unlock()
+
+	msg := sendUpdateJson{
+		Event:  event,
+		Update: update,
+	}
+	jsonData, err := json.Marshal(msg)
+	if err != nil {
+		log.Println("Failed to marshal direct update message json:", err)
+		return
+	}
+	if err := conn.WriteMessage(websocket.TextMessage, jsonData); err != nil {
+		log.Println("Failed to send direct message:", err)
+	}
+}
+
 /* This function applies operational transformations on 'incomingOp' by adjusting it based on the past 'historyOp' (Adjusts in place)
  * PARAMS: incomingOp: a map of the new operation, historyOp: a map of the old operation with a equal or higher than version than incoming
  * RETURNS: Nothing, adjusts incomingOp in place
  */
 func transformOp(incomingOp map[string]any, historyOp map[string]any) {
-	incomingType := incomingOp["type"].(string)
-	historyType := historyOp["type"].(string)
+	incomingType, incomingTypeOK := incomingOp["type"].(string)
+	historyType, historyTypeOK := historyOp["type"].(string)
+	if !incomingTypeOK || !historyTypeOK {
+		return
+	}
 
 	// Handle OT operations
 	switch {
 	case incomingType == "insert" && historyType == "insert": // Insert | Insert
-		// Declare variables for use
-		incomingPos := incomingOp["pos"].(float64)
-		historyPos := historyOp["pos"].(float64)
-		historyVal := historyOp["value"].(string)
+		incomingPos, incomingPosOK := getIntValue(incomingOp["pos"])
+		historyPos, historyPosOK := getIntValue(historyOp["pos"])
+		historyVal, historyValOK := historyOp["value"].(string)
+		if !incomingPosOK || !historyPosOK || !historyValOK {
+			return
+		}
+		historyLen := utf8.RuneCountInString(historyVal)
 
 		// If other insert was before current adjust the current ops index
-		if (historyPos < incomingPos) || (historyPos == incomingPos && historyOp["author"].(string) < incomingOp["author"].(string)) {
-			incomingOp["pos"] = incomingPos + float64(len(historyVal))
+		if historyPos < incomingPos || (historyPos == incomingPos && authorPrecedes(historyOp["author"], incomingOp["author"])) {
+			incomingOp["pos"] = float64(incomingPos + historyLen)
 		}
 	case incomingType == "insert" && historyType == "delete": // Insert | Delete
-		// Declare variables for use
-		incomingPos := incomingOp["pos"].(float64)
-		historyFrom := historyOp["from"].(float64)
-		historyTo := historyOp["to"].(float64)
+		incomingPos, incomingPosOK := getIntValue(incomingOp["pos"])
+		historyFrom, historyFromOK := getIntValue(historyOp["from"])
+		historyTo, historyToOK := getIntValue(historyOp["to"])
+		if !incomingPosOK || !historyFromOK || !historyToOK {
+			return
+		}
+		historyLen := historyTo - historyFrom
 
 		if historyTo <= incomingPos {
-			incomingOp["pos"] = incomingPos - (historyTo - historyFrom) // Snap to adjusted area
+			incomingOp["pos"] = float64(incomingPos - historyLen) // Snap to adjusted area
 		} else if incomingPos >= historyFrom {
-			incomingOp["pos"] = historyFrom // Snap to start of deleted area
+			incomingOp["pos"] = float64(historyFrom) // Snap to start of deleted area
 		}
 	case incomingType == "delete" && historyType == "insert": // Delete | Insert
-		// Declare variables for use
-		incomingFrom := incomingOp["from"].(float64)
-		incomingTo := incomingOp["to"].(float64)
-		historyPos := historyOp["pos"].(float64)
-		historyVal := historyOp["value"].(string)
+		incomingFrom, incomingFromOK := getIntValue(incomingOp["from"])
+		incomingTo, incomingToOK := getIntValue(incomingOp["to"])
+		historyPos, historyPosOK := getIntValue(historyOp["pos"])
+		historyVal, historyValOK := historyOp["value"].(string)
+		if !incomingFromOK || !incomingToOK || !historyPosOK || !historyValOK {
+			return
+		}
+		historyLen := utf8.RuneCountInString(historyVal)
 
 		// Deleted after insert
 		if historyPos <= incomingFrom {
-			incomingOp["from"] = incomingFrom + float64(len(historyVal))
-			incomingOp["to"] = incomingTo + float64(len(historyVal))
+			incomingOp["from"] = float64(incomingFrom + historyLen)
+			incomingOp["to"] = float64(incomingTo + historyLen)
 		} else if historyPos < incomingTo {
-			incomingOp["to"] = incomingTo + float64(len(historyVal)) // Insert in middle of delete
+			incomingOp["to"] = float64(incomingTo + historyLen) // Insert in middle of delete
 		}
 	case incomingType == "delete" && historyType == "delete": // Delete | Delete
-		// Declare variables for use
-		incomingFrom := incomingOp["from"].(float64)
-		incomingTo := incomingOp["to"].(float64)
-		historyFrom := historyOp["from"].(float64)
-		historyTo := historyOp["to"].(float64)
-		historyLen := historyTo - historyFrom
-
-		// Delete before other
-
-		// Overlapping
-		if historyTo <= incomingFrom {
-			incomingOp["from"] = incomingFrom - historyLen
-			incomingOp["to"] = incomingTo - historyLen
-		} else if historyFrom >= incomingTo {
-			// Delete after other
-		} else {
-			newFrom := min(incomingFrom, historyFrom)
-			newTo := max(incomingTo, historyTo)
-			incomingOp["from"] = float64(newFrom)
-			incomingOp["to"] = float64(newTo)
+		incomingFrom, incomingFromOK := getIntValue(incomingOp["from"])
+		incomingTo, incomingToOK := getIntValue(incomingOp["to"])
+		historyFrom, historyFromOK := getIntValue(historyOp["from"])
+		historyTo, historyToOK := getIntValue(historyOp["to"])
+		if !incomingFromOK || !incomingToOK || !historyFromOK || !historyToOK {
+			return
 		}
+
+		removedBefore := func(pos int) int {
+			if pos <= historyFrom {
+				return 0
+			}
+			if pos >= historyTo {
+				return historyTo - historyFrom
+			}
+			return pos - historyFrom
+		}
+
+		newFrom := incomingFrom - removedBefore(incomingFrom)
+		newTo := incomingTo - removedBefore(incomingTo)
+		if newTo < newFrom {
+			newTo = newFrom
+		}
+
+		incomingOp["from"] = float64(newFrom)
+		incomingOp["to"] = float64(newTo)
 	default:
 		break
 	}
 }
 
-/* This is a helper function for versionMismatch that allows the user to see if the type of the version is something common and convert it to a uint64
- * PARAMS: A mapped operation (op from history)
- * RETURNS: Two variables the value as a uint64 and a bool for whether this worked or defaulted
- */
-func getOpVersion(op map[string]any) (uint64, bool) {
-	switch value := op["version"].(type) {
+func getIntValue(raw any) (int, bool) {
+	switch value := raw.(type) {
 	case float64:
-		return uint64(value), true
+		return int(value), true
 	case int:
-		return uint64(value), true
-	case uint64:
 		return value, true
+	case int64:
+		return int(value), true
+	case uint:
+		return int(value), true
+	case uint64:
+		return int(value), true
 	default:
-		fmt.Printf("Unexpected version type: %T (%v)\n", value, value)
 		return 0, false
 	}
+}
+
+func authorToInt64(raw any) (int64, bool) {
+	switch value := raw.(type) {
+	case float64:
+		return int64(value), true
+	case int:
+		return int64(value), true
+	case int64:
+		return value, true
+	case uint:
+		return int64(value), true
+	case uint64:
+		return int64(value), true
+	default:
+		return 0, false
+	}
+}
+
+func authorPrecedes(historyAuthor any, incomingAuthor any) bool {
+	hID, hOK := authorToInt64(historyAuthor)
+	iID, iOK := authorToInt64(incomingAuthor)
+	if hOK && iOK {
+		return hID < iID
+	}
+	return fmt.Sprintf("%v", historyAuthor) < fmt.Sprintf("%v", incomingAuthor)
+}
+
+func (room *Room) applyTextOperation(op map[string]any) bool {
+	opType, ok := op["type"].(string)
+	if !ok {
+		return false
+	}
+
+	switch opType {
+	case "insert":
+		position, okPos := getIntValue(op["pos"])
+		value, okValue := op["value"].(string)
+		if !okPos || !okValue {
+			return false
+		}
+
+		textLen := room.getTextLen()
+		if position < 0 {
+			position = 0
+		} else if position > textLen {
+			position = textLen
+		}
+		room.insertBytes(position, value)
+		return true
+	case "delete":
+		from, okFrom := getIntValue(op["from"])
+		to, okTo := getIntValue(op["to"])
+		if !okFrom || !okTo {
+			return false
+		}
+
+		if from > to {
+			from, to = to, from
+		}
+		textLen := room.getTextLen()
+		if from < 0 {
+			from = 0
+		}
+		if to < from {
+			to = from
+		}
+		if to > textLen {
+			to = textLen
+		}
+		if from > textLen {
+			from = textLen
+		}
+
+		if to > from {
+			room.deleteByte(from, to-from)
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func (room *Room) commitOperation(op map[string]any) {
+	room.text_mu.Lock()
+	room.version++
+	op["version"] = room.version
+	room.history = append(room.history, op)
+	if len(room.history) > maxHistoryOps {
+		excess := len(room.history) - maxHistoryOps
+		room.history = room.history[excess:]
+		room.historyBase += uint64(excess)
+	}
+	room.text_mu.Unlock()
 }
 
 /* This function goes through all past operations that are of equal or greater version than the current one and adjusts them to fit what it needs to be then sends out the broadcast
@@ -287,35 +432,17 @@ func getOpVersion(op map[string]any) (uint64, bool) {
  *	clientVersion: a uint64 value of the clients local version ; currentVersion: a uint64 value of the rooms most current version ; message: the operation as a string
  * RETURNS: Nothing, broadcasts message
  */
-func (room *Room) versionMismatch(conn *websocket.Conn, json_mess map[string]any, clientVersion uint64, currentVersion uint64, message string) {
-	fmt.Printf("Version Mismatch: client %d != server %d\n", clientVersion, currentVersion)
-
+func (room *Room) versionMismatch(conn *websocket.Conn, json_mess map[string]any, clientVersion uint64, currentVersion uint64) {
 	// Check for race Conditions
 	if clientVersion > currentVersion {
-		fmt.Printf("WARNING: Client version (%d) is ahead of server version (%d).\n", clientVersion, currentVersion)
-
-		// Just apply the operation directly without transformation
-		if json_mess["type"] == "insert" {
-			position := int(json_mess["pos"].(float64))
-			textLen := len(room.getText())
-			if position < 0 {
-				position = 0
-			} else if position > textLen {
-				position = textLen
-			}
-			room.insertBytes(position, json_mess["value"].(string))
-		} else if json_mess["type"] == "delete" {
-			from := int(json_mess["from"].(float64))
-			to := int(json_mess["to"].(float64))
-			room.deleteByte(from, to-from)
+		// Just apply the operation directly without transformation.
+		if !room.applyTextOperation(json_mess) {
+			log.Println("Invalid operation payload in version mismatch:", json_mess)
+			return
 		}
 
 		// Update room version & history
-		room.text_mu.Lock()
-		room.version++
-		json_mess["version"] = room.version
-		room.history = append(room.history, json_mess)
-		room.text_mu.Unlock()
+		room.commitOperation(json_mess)
 
 		// Convert the json_mess back to a JSON string
 		updatedMessage, err := json.Marshal(json_mess)
@@ -324,52 +451,38 @@ func (room *Room) versionMismatch(conn *websocket.Conn, json_mess map[string]any
 			return
 		}
 
-		// Broadcast the updated message
-		room.broadcastUpdate(nil, "version_mismatch_update", string(updatedMessage), true)
+		// Broadcast to other clients and send version acknowledgement to sender.
+		room.broadcastUpdate(conn, "input_update", string(updatedMessage), true)
+		room.sendUpdateToConnection(conn, "version_ack", map[string]any{"version": room.getVersion()})
 		return
 	}
 
 	// Normal case: Client version is behind server version
-	historyLen := uint64(len(room.history))
-	if clientVersion > historyLen {
-		fmt.Printf("Client version (%d) exceeds history length (%d). Adjusting.\n", clientVersion, historyLen)
-		clientVersion = historyLen
+	if clientVersion < room.historyBase {
+		room.sendUpdateToConnection(conn, "resync_update", map[string]any{
+			"text":    room.getText(),
+			"version": room.getVersion(),
+		})
+		return
 	}
 
 	// Transform against history operations
-	for _, op := range room.history[clientVersion:] {
-		version, ok := getOpVersion(op)
-		if !ok {
-			fmt.Println("Failed to get version from history op", op)
-			continue
-		}
-		if version >= clientVersion {
-			transformOp(json_mess, op)
-		}
+	historyStart := clientVersion - room.historyBase
+	if historyStart > uint64(len(room.history)) {
+		historyStart = uint64(len(room.history))
+	}
+	for _, op := range room.history[historyStart:] {
+		transformOp(json_mess, op)
 	}
 
 	// Apply transformed op
-	if json_mess["type"] == "insert" {
-		position := int(json_mess["pos"].(float64))
-		textLen := len(room.getText())
-		if position < 0 {
-			position = 0
-		} else if position > textLen {
-			position = textLen
-		}
-		room.insertBytes(position, json_mess["value"].(string))
-	} else if json_mess["type"] == "delete" {
-		from := int(json_mess["from"].(float64))
-		to := int(json_mess["to"].(float64))
-		room.deleteByte(from, to-from)
+	if !room.applyTextOperation(json_mess) {
+		log.Println("Invalid transformed operation payload:", json_mess)
+		return
 	}
 
 	// Update room version & history
-	room.text_mu.Lock()
-	room.version++
-	json_mess["version"] = room.version
-	room.history = append(room.history, json_mess)
-	room.text_mu.Unlock()
+	room.commitOperation(json_mess)
 
 	// Convert the transformed json_mess back to a JSON string
 	updatedMessage, err := json.Marshal(json_mess)
@@ -378,8 +491,9 @@ func (room *Room) versionMismatch(conn *websocket.Conn, json_mess map[string]any
 		return
 	}
 
-	// Broadcast the transformed and updated message
-	room.broadcastUpdate(nil, "version_mismatch_update", string(updatedMessage), true)
+	// Broadcast transformed operation to others and only acknowledge version to sender.
+	room.broadcastUpdate(conn, "input_update", string(updatedMessage), true)
+	room.sendUpdateToConnection(conn, "version_ack", map[string]any{"version": room.getVersion()})
 }
 
 /* This function recieves a message from a websocket connection and dictates what we update/if we respond
@@ -389,34 +503,42 @@ func (room *Room) versionMismatch(conn *websocket.Conn, json_mess map[string]any
 func (room *Room) handleMessages(message string, conn *websocket.Conn) {
 	// Turn the raw text back into a usable type
 	var json_mess map[string]any
-	json.Unmarshal([]byte(message), &json_mess)
+	if err := json.Unmarshal([]byte(message), &json_mess); err != nil {
+		log.Println("Invalid websocket message:", err)
+		return
+	}
 
 	switch json_mess["event"] {
 	case "text_update":
-		clientVersion := uint64(json_mess["version"].(float64))
-		currentVersion := room.getVersion()
-		if clientVersion != currentVersion {
-			room.versionMismatch(conn, json_mess, clientVersion, currentVersion, message)
+		room.op_mu.Lock()
+		defer room.op_mu.Unlock()
+
+		clientVersionInt, ok := getIntValue(json_mess["version"])
+		if !ok || clientVersionInt < 0 {
+			log.Println("Invalid version in incoming message:", json_mess["version"])
 			return
 		}
-		if json_mess["type"] == "insert" {
-			position := int(json_mess["pos"].(float64))
-			if position > len(room.getText()) {
-				position -= 1
-			}
-			room.insertBytes(position, json_mess["value"].(string))
-		} else if json_mess["type"] == "delete" {
-			from := int(json_mess["from"].(float64))
-			to := int(json_mess["to"].(float64))
-			room.deleteByte(from, to-from)
+		clientVersion := uint64(clientVersionInt)
+		currentVersion := room.getVersion()
+		if clientVersion != currentVersion {
+			room.versionMismatch(conn, json_mess, clientVersion, currentVersion)
+			return
 		}
-		room.version++
-		room.history = append(room.history, json_mess)
-		room.broadcastUpdate(conn, "input_update", message, true)
+		if !room.applyTextOperation(json_mess) {
+			log.Println("Invalid text operation payload:", json_mess)
+			return
+		}
+		room.commitOperation(json_mess)
+		updatedMessage, err := json.Marshal(json_mess)
+		if err != nil {
+			log.Println("Failed to marshal operation for broadcast:", err)
+			return
+		}
+		room.broadcastUpdate(conn, "input_update", string(updatedMessage), true)
+		room.sendUpdateToConnection(conn, "version_ack", map[string]any{"version": room.getVersion()})
 	default:
 		log.Print("Invalid json event")
 	}
-	log.Printf("Body:%s\n", room.getText())
 }
 
 /* This function gets the current version the room has
@@ -449,7 +571,6 @@ func (room *Room) NewConnection(conn *websocket.Conn) {
 	room.con_mu.Unlock()
 	defer conn.Close()
 
-	time.Sleep(time.Duration(500) * time.Millisecond)
 	msg := sendUpdateJson{
 		Event: "connection_update",
 		Update: map[string]interface{}{
@@ -474,6 +595,9 @@ func (room *Room) NewConnection(conn *websocket.Conn) {
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
+			if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived) {
+				break
+			}
 			log.Println("Error reading message:", err)
 			break
 		}

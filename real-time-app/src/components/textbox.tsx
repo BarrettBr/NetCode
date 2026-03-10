@@ -1,235 +1,436 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import {
+  EditorView,
+  drawSelection,
+  highlightActiveLine,
+  keymap,
+  lineNumbers,
+} from "@codemirror/view";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentWithTab,
+  insertNewlineAndIndent,
+} from "@codemirror/commands";
 import type { RopeOperation } from "@/hooks/useRopes";
-import LineNum from "@/components/LineNum";
+
+declare global {
+  interface Window {
+    __NETCODE_EDITOR_EVENTS__?: Array<{
+      id: string;
+      kind: string;
+      text: string;
+    }>;
+  }
+}
 
 type Props = {
   curText: string;
-  setText: (
-    value: string,
-    forceTab?: {
-      force: boolean;
-      start: number;
-      end: number;
-      replacement: string;
-    }
-  ) => void;
+  setText: (ops: RopeOperation[]) => void;
   incomingOp: RopeOperation[];
+  syncVersion: number;
+  isSynced: boolean;
   id: string;
 };
 
-/*
-  Textbox Component:
-    Reusable Textbox component that lets someone:
-      - Enter text to a textbox
-      - Sync requests the text with the backend
-      - Retrieve text updates from the backend
+function Textbox({
+  curText,
+  setText,
+  incomingOp,
+  syncVersion,
+  isSynced,
+  id,
+}: Props) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  const suppressDispatchRef = useRef(false);
+  const processedIncomingOps = useRef(0);
+  const submitOpsRef = useRef(setText);
+  const editableCompartmentRef = useRef(new Compartment());
 
-    Props:
-      - curText: string
-        A string that when called to retrieves the current text inputted in the textbox
-      - setText: (value: string) => void
-        A callback function used to update the textbox when typing
-      - incomingOp: RopeOperation | null
-        A RopeOperation that declares if the most recent change was an update or a delete and the position of it, used for cursor management
+  const applyOpToText = (baseText: string, op: RopeOperation) => {
+    if (op.type === "insert") {
+      const position = Math.max(0, Math.min(op.pos, baseText.length));
+      return baseText.slice(0, position) + op.value + baseText.slice(position);
+    }
 
-    Functions:
-      - handleInput: Handles when the user enters & changes the textbox through DOM manipulation
-      - useEffect: Handles when someone else changes the DOM element
-
-    Dependencies:
-      - No outside dependencies outside of passed Props
-*/
-function Textbox({ curText, setText, incomingOp, id }: Props) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const lastTextRef = useRef<string>(""); // Keep last known value
-  const cursorRef = useRef<number>(0); // Keep cursor position
-  const lineNumRef = useRef<HTMLDivElement>(null);
-  const skipNextEffect = useRef(false);
-  const [numLines, setNumLines] = useState(1);
-
-  const updateLines = (codecontent: string) => {
-    const newLines = codecontent.split("\n").length;
-    setNumLines(newLines);
+    const from = Math.max(0, Math.min(op.from, baseText.length));
+    const to = Math.max(from, Math.min(op.to, baseText.length));
+    return baseText.slice(0, from) + baseText.slice(to);
   };
 
-  // Used to handle tabbing
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Tab") {
-      e.preventDefault();
-      const textarea = textareaRef.current;
-      if (!textarea) return;
+  const publishDocText = (docText: string) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    hostRef.current?.setAttribute("data-editor-text", docText);
+  };
 
-      const start = textarea.selectionStart;
-      const end = textarea.selectionEnd;
-      let newValue: string;
-      let updatedStart = start;
-      let updatedEnd = end;
+  const publishEvent = (kind: string, docText: string) => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    window.__NETCODE_EDITOR_EVENTS__ = window.__NETCODE_EDITOR_EVENTS__ ?? [];
+    window.__NETCODE_EDITOR_EVENTS__.push({ id, kind, text: docText });
+  };
 
-      /*
-      console.log(`Start: ${start}`);
-      console.log(`end: ${end}`);
-      console.log(`updatedStart: ${updatedStart}`);
-      console.log(`updatedEnd: ${updatedEnd}`);
-      */
+  const buildOpsFromDiff = (
+    previousText: string,
+    nextText: string
+  ): RopeOperation[] => {
+    if (previousText === nextText) {
+      return [];
+    }
 
-      let replacement = "    ";
+    let start = 0;
+    while (
+      start < previousText.length &&
+      start < nextText.length &&
+      previousText[start] === nextText[start]
+    ) {
+      start++;
+    }
 
-      if (start === end) {
-        // Single tab insert
-        newValue = curText.slice(0, start) + "    " + curText.slice(end);
-        updatedStart = updatedEnd = start + replacement.length;
-        skipNextEffect.current = true;
-        setText(newValue, {
-          force: true,
-          start: start,
-          end: end,
-          replacement,
-        });
-      } else {
-        // Multi-line tab
-        const fullText = curText;
-        const lineStart = fullText.lastIndexOf("\n", start - 1) + 1;
-        const before = fullText.slice(0, lineStart);
-        const selected = fullText.slice(lineStart, end);
-        const after = fullText.slice(end);
+    let previousEnd = previousText.length;
+    let nextEnd = nextText.length;
+    while (
+      previousEnd > start &&
+      nextEnd > start &&
+      previousText[previousEnd - 1] === nextText[nextEnd - 1]
+    ) {
+      previousEnd--;
+      nextEnd--;
+    }
 
-        const lines = selected.split("\n");
-        const tabbed = lines.map((line) => replacement + line).join("\n");
-
-        newValue = before + tabbed + after;
-        // Keep entire block selected
-        updatedStart = lineStart;
-        updatedEnd = lineStart + tabbed.length;
-
-        // Debug Comments
-        /*
-        console.log(`fullText: ${fullText}`);
-        console.log(`lineStart: ${lineStart}`);
-        console.log(`before: ${before}`);
-        console.log(`selected: ${selected}`);
-        console.log(`after: ${after}`);
-        console.log(`lines: ${lines}`);
-        console.log(`tabbed: ${tabbed}`);
-        console.log(`newValue: ${newValue}`);
-        console.log(`updatedStart: ${updatedStart}`);
-        console.log(`updatedEnd: ${updatedEnd}`);
-        */
-        skipNextEffect.current = true;
-        setText(newValue, {
-          force: true,
-          start: start,
-          end: end,
-          replacement: tabbed,
-        });
-      }
-
-      // Update state
-      textarea.value = newValue;
-      lastTextRef.current = newValue;
-      updateLines(newValue);
-
-      // Restore cursor after React updates
-      requestAnimationFrame(() => {
-        if (!textareaRef.current) return;
-        textareaRef.current.selectionStart = updatedStart;
-        textareaRef.current.selectionEnd = updatedEnd;
+    const ops: RopeOperation[] = [];
+    if (previousEnd > start) {
+      ops.push({
+        event: "text_update",
+        type: "delete",
+        from: start,
+        to: previousEnd,
+        version: 0,
+        author: 0,
       });
     }
-  };
 
-  // Used to handle user-inputted changes
-  const handleInput = () => {
-    // Grab the textarea DOM element
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-
-    // Height/width adjustment for fitting in div
-    textarea.style.height = "auto";
-    textarea.style.height = `${textarea.scrollHeight}px`;
-    textarea.style.width = "auto";
-    textarea.style.width = `${textarea.scrollWidth}px`;
-
-    // Grad current value from DOM and save where cursor is
-    const newText = textarea.value;
-    cursorRef.current = textarea.selectionStart ?? 0;
-
-    // Only update text changed
-    if (newText !== lastTextRef.current) {
-      setText(newText);
-      lastTextRef.current = newText;
-      updateLines(newText);
+    if (nextEnd > start) {
+      ops.push({
+        event: "text_update",
+        type: "insert",
+        pos: start,
+        value: nextText.slice(start, nextEnd),
+        version: 0,
+        author: 0,
+      });
     }
+
+    return ops;
   };
 
-  // Used to sync scrolling of lineNum + code div
-  const handleScroll = () => {
-    if (!lineNumRef.current || !wrapperRef.current) return;
-    lineNumRef.current.scrollTop = wrapperRef.current.scrollTop;
-  };
-
-  // Used to handle incoming changes
   useEffect(() => {
-    // Get current DOM element
-    const textarea = textareaRef.current;
-    if (!textarea) return;
+    submitOpsRef.current = setText;
+  }, [setText]);
 
-    // Only update it if the text is different
-    if (curText !== lastTextRef.current) {
-      if (skipNextEffect.current) {
-        skipNextEffect.current = false;
-        return;
-      }
-      // Grab cursor, update text and restore cursor
-      let currentCursor = textarea.selectionStart ?? 0;
-      while (incomingOp.length > 0) {
-        var headOp = incomingOp.shift();
-        if (!headOp) return;
-        if (headOp.type === "insert" && headOp.pos <= currentCursor) {
-          currentCursor += headOp.value.length;
-        } else if (headOp.type === "delete") {
-          if (headOp.to <= currentCursor) {
-            currentCursor -= headOp.to - headOp.from;
-          } else if (headOp.from < currentCursor && currentCursor < headOp.to) {
-            currentCursor = headOp.from;
+  useEffect(() => {
+    if (!hostRef.current || viewRef.current) {
+      return;
+    }
+
+    const editorTheme = EditorView.theme({
+      "&": {
+        height: "100%",
+        backgroundColor: "#030a0d",
+        color: "#d4d4d4",
+        fontFamily: '"Fira Code", monospace',
+        fontSize: "0.875rem",
+      },
+      ".cm-scroller": {
+        overflow: "auto",
+        fontFamily: '"Fira Code", monospace',
+        lineHeight: "24px",
+      },
+      ".cm-content, .cm-gutterElement": {
+        lineHeight: "24px",
+      },
+      ".cm-content": {
+        padding: "12px 0",
+        caretColor: "#d4d4d4",
+        minHeight: "100%",
+      },
+      ".cm-line": {
+        padding: "0 12px",
+      },
+      ".cm-gutters": {
+        backgroundColor: "#030a0d",
+        color: "#888",
+        borderRight: "2px solid #213030",
+      },
+      ".cm-activeLine, .cm-activeLineGutter": {
+        backgroundColor: "transparent",
+      },
+      ".cm-selectionBackground": {
+        backgroundColor: "#244b5a !important",
+      },
+      "&.cm-focused": {
+        outline: "none",
+      },
+      ".cm-cursor": {
+        borderLeftColor: "#d4d4d4",
+      },
+      "&.cm-editor.cm-readonly .cm-content": {
+        caretColor: "transparent",
+      },
+    });
+
+    const extensions: Extension[] = [
+      editableCompartmentRef.current.of(EditorView.editable.of(isSynced)),
+      lineNumbers(),
+      history(),
+      drawSelection(),
+      highlightActiveLine(),
+      keymap.of([
+        { key: "Enter", run: insertNewlineAndIndent },
+        ...defaultKeymap,
+        ...historyKeymap,
+        indentWithTab,
+      ]),
+      EditorState.tabSize.of(4),
+      EditorView.updateListener.of((update) => {
+        if (!update.docChanged || suppressDispatchRef.current) {
+          return;
+        }
+
+        let ops: RopeOperation[] = [];
+        let delta = 0;
+        update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+          const pos = fromA + delta;
+          const deletedLen = toA - fromA;
+          const insertedText = inserted.toString();
+
+          if (deletedLen > 0) {
+            ops.push({
+              event: "text_update",
+              type: "delete",
+              from: pos,
+              to: pos + deletedLen,
+              version: 0,
+              author: 0,
+            });
           }
+
+          if (insertedText.length > 0) {
+            ops.push({
+              event: "text_update",
+              type: "insert",
+              pos,
+              value: insertedText,
+              version: 0,
+              author: 0,
+            });
+          }
+
+          delta += insertedText.length - deletedLen;
+        });
+
+        const startSelection = update.startState.selection.main;
+        const previousDocLen = update.startState.doc.length;
+        const isSuspiciousReplaceAll =
+          startSelection.empty &&
+          ops.length >= 1 &&
+          ops.some(
+            (op) =>
+              op.type === "delete" &&
+              op.from === 0 &&
+              op.to === previousDocLen &&
+              previousDocLen > 1
+          );
+
+        if (isSuspiciousReplaceAll) {
+          ops = buildOpsFromDiff(
+            update.startState.doc.toString(),
+            update.state.doc.toString()
+          );
+        }
+
+        if (ops.length > 0) {
+          publishDocText(update.state.doc.toString());
+          publishEvent("local_update", update.state.doc.toString());
+          submitOpsRef.current(ops);
+        }
+      }),
+      editorTheme,
+    ];
+
+    viewRef.current = new EditorView({
+      state: EditorState.create({
+        doc: curText,
+        extensions,
+      }),
+      parent: hostRef.current,
+    });
+
+    const view = viewRef.current;
+    view.contentDOM.setAttribute("id", id);
+    view.contentDOM.setAttribute("spellcheck", "false");
+    view.contentDOM.setAttribute("autocorrect", "off");
+    view.contentDOM.setAttribute("autocapitalize", "off");
+    view.contentDOM.setAttribute("data-gramm", "false");
+    publishDocText(view.state.doc.toString());
+    publishEvent("mount", view.state.doc.toString());
+
+    return () => {
+      view.destroy();
+      viewRef.current = null;
+    };
+  }, [id]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+
+    const startIdx = Math.min(processedIncomingOps.current, incomingOp.length);
+    const pendingOps = incomingOp.slice(startIdx);
+    if (pendingOps.length === 0) {
+      return;
+    }
+    processedIncomingOps.current = incomingOp.length;
+
+    const shouldMapSelection = view.hasFocus;
+    const selection = view.state.selection.main;
+    let anchor = selection.anchor;
+    let head = selection.head;
+
+    const mapPosition = (pos: number, op: RopeOperation) => {
+      if (op.type === "insert") {
+        return op.pos <= pos ? pos + op.value.length : pos;
+      }
+      if (op.to <= pos) {
+        return pos - (op.to - op.from);
+      }
+      if (op.from < pos) {
+        return op.from;
+      }
+      return pos;
+    };
+
+    suppressDispatchRef.current = true;
+    try {
+      let fallbackDoc = view.state.doc.toString();
+      for (const op of pendingOps) {
+        fallbackDoc = applyOpToText(fallbackDoc, op);
+        if (op.type === "insert") {
+          const from = Math.max(0, Math.min(op.pos, view.state.doc.length));
+          view.dispatch({
+            changes: {
+              from,
+              insert: op.value,
+            },
+          });
+        } else {
+          const from = Math.max(0, Math.min(op.from, view.state.doc.length));
+          const to = Math.max(from, Math.min(op.to, view.state.doc.length));
+          view.dispatch({
+            changes: {
+              from,
+              to,
+              insert: "",
+            },
+          });
+        }
+        if (shouldMapSelection) {
+          anchor = mapPosition(anchor, op);
+          head = mapPosition(head, op);
         }
       }
 
-      textarea.value = curText;
-      lastTextRef.current = curText;
-
-      textarea.style.height = "auto";
-      textarea.style.height = `${textarea.scrollHeight}px`;
-      textarea.style.width = "auto";
-      textarea.style.width = `${textarea.scrollWidth}px`;
-
-      textarea.setSelectionRange(currentCursor, currentCursor);
-      updateLines(curText);
+      if (shouldMapSelection) {
+        const docLen = view.state.doc.length;
+        view.dispatch({
+          selection: {
+            anchor: Math.max(0, Math.min(anchor, docLen)),
+            head: Math.max(0, Math.min(head, docLen)),
+          },
+        });
+      }
+      publishDocText(view.state.doc.toString());
+      publishEvent("remote_apply", view.state.doc.toString());
+    } catch {
+      const currentDoc = view.state.doc.toString();
+      let fallbackDoc = currentDoc;
+      for (const op of pendingOps) {
+        fallbackDoc = applyOpToText(fallbackDoc, op);
+      }
+      view.dispatch({
+        changes: {
+          from: 0,
+          to: currentDoc.length,
+          insert: fallbackDoc,
+        },
+      });
+      publishDocText(fallbackDoc);
+      publishEvent("remote_fallback", fallbackDoc);
+    } finally {
+      suppressDispatchRef.current = false;
     }
-  }, [curText, incomingOp]);
+  }, [incomingOp]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+
+    const currentDoc = view.state.doc.toString();
+    if (currentDoc === curText) {
+      return;
+    }
+
+    const selection = view.state.selection.main;
+
+    suppressDispatchRef.current = true;
+    try {
+      view.dispatch({
+        changes: {
+          from: 0,
+          to: currentDoc.length,
+          insert: curText,
+        },
+        selection: {
+          anchor: Math.min(selection.anchor, curText.length),
+          head: Math.min(selection.head, curText.length),
+        },
+      });
+      processedIncomingOps.current = incomingOp.length;
+      publishDocText(curText);
+      publishEvent("snapshot_replace", curText);
+    } finally {
+      suppressDispatchRef.current = false;
+    }
+  }, [syncVersion]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) {
+      return;
+    }
+
+    view.dispatch({
+      effects: editableCompartmentRef.current.reconfigure(
+        EditorView.editable.of(isSynced)
+      ),
+    });
+  }, [isSynced]);
 
   return (
-    <div className="flex max-h-[calc(100vh-9.2rem)] h-full flex-row border-2 border-[#213030] rounded">
-      <div
-        className="flex flex-row w-full overflow-y-auto custom-scroll scroll-stable"
-        ref={wrapperRef}
-        onScroll={handleScroll}
-      >
-        <LineNum lineCount={numLines} scrollRef={lineNumRef} />
-        <div className="flex flex-1 h-full scroll-stable">
-          <textarea
-            id={id}
-            ref={textareaRef}
-            onInput={handleInput}
-            onKeyDown={handleKeyDown}
-            placeholder="Enter your text here"
-            className="textbox flex-1 font-fira min-h-[calc(100vh-25rem)] overflow-y-hidden custom-scroll"
-            wrap="off"
-          />
-        </div>
-      </div>
+    <div className="flex max-h-[calc(100vh-9.2rem)] h-full flex-row border-2 border-[#213030] rounded overflow-hidden">
+      <div ref={hostRef} className="h-full w-full" />
     </div>
   );
 }
+
 export default Textbox;
