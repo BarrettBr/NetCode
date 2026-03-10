@@ -10,14 +10,29 @@ import {
 export default function SelectScrollable() {
   return (
     <Select defaultValue="main">
-      <SelectTrigger className="w-full max-w-full truncate border-none outline-none bg-seperator">
+      <SelectTrigger className="h-auto w-full max-w-full truncate border-none bg-transparent px-0 py-0 text-left text-sm font-semibold text-white shadow-none outline-none hover:bg-transparent focus-visible:ring-0">
         <SelectValue placeholder="Select a branch" />
       </SelectTrigger>
-      <SelectContent className="bg-Cborder text-white border-none">
+      <SelectContent className="border border-Cborder bg-light-panel text-white">
         <SelectGroup>
-          <SelectItem value="main">main</SelectItem>
-          <SelectItem value="ui-refresh">ui-refresh</SelectItem>
-          <SelectItem value="concurrency-fix">concurrency-fix</SelectItem>
+          <SelectItem
+            value="main"
+            className="cursor-pointer text-white data-[highlighted]:bg-white/10 data-[highlighted]:text-white"
+          >
+            main
+          </SelectItem>
+          <SelectItem
+            value="ui-refresh"
+            className="cursor-pointer text-white data-[highlighted]:bg-white/10 data-[highlighted]:text-white"
+          >
+            ui-refresh
+          </SelectItem>
+          <SelectItem
+            value="concurrency-fix"
+            className="cursor-pointer text-white data-[highlighted]:bg-white/10 data-[highlighted]:text-white"
+          >
+            concurrency-fix
+          </SelectItem>
         </SelectGroup>
       </SelectContent>
     </Select>
