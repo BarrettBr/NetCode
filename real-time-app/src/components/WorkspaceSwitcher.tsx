@@ -79,20 +79,22 @@ export default function WorkspaceSwitcher() {
     <DropdownMenu>
       <DropdownMenuTrigger className="flex w-full items-center justify-between gap-3 rounded-2xl border border-Cborder/65 bg-light-panel/60 px-3.5 py-3 text-left transition hover:border-Cborder hover:bg-light-panel/85 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/20">
         <div className="flex min-w-0 items-center gap-3 overflow-hidden">
-          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-Cborder/75 text-tab-active">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-Cborder/75 text-tab-active">
             <Layers3 className="h-4 w-4" />
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-white/35">
               Repo / Branch
             </p>
             <p className="mt-1 truncate text-sm font-semibold text-white">
-              {selectedWorkspace.name} <span className="text-white/35">/</span>{" "}
+              {selectedWorkspace.name}
+            </p>
+            <p className="mt-0.5 truncate text-xs text-white/42">
               {selectedBranch}
             </p>
           </div>
         </div>
-        <ChevronsUpDown className="h-4 w-4 shrink-0 text-white/35" />
+        <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-white/35" />
       </DropdownMenuTrigger>
 
       <DropdownMenuContent
