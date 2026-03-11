@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   Compartment,
   EditorSelection,
@@ -121,7 +121,7 @@ function buildEditorKeymap(tabSize: number) {
           state.update(changes, {
             scrollIntoView: true,
             userEvent: "input",
-          })
+          }),
         );
         return true;
       },
@@ -143,6 +143,8 @@ function Textbox({
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const initialDocRef = useRef(curText);
+  const initialSettingsRef = useRef(editorSettings);
   const suppressDispatchRef = useRef(false);
   const processedIncomingOps = useRef(0);
   const submitOpsRef = useRef(setText);
@@ -151,7 +153,7 @@ function Textbox({
   const tabSizeCompartmentRef = useRef(new Compartment());
   const keymapCompartmentRef = useRef(new Compartment());
 
-  const applyOpToText = (baseText: string, op: RopeOperation) => {
+  const applyOpToText = useCallback((baseText: string, op: RopeOperation) => {
     if (op.type === "insert") {
       const position = Math.max(0, Math.min(op.pos, baseText.length));
       return baseText.slice(0, position) + op.value + baseText.slice(position);
@@ -160,96 +162,228 @@ function Textbox({
     const from = Math.max(0, Math.min(op.from, baseText.length));
     const to = Math.max(from, Math.min(op.to, baseText.length));
     return baseText.slice(0, from) + baseText.slice(to);
-  };
+  }, []);
 
-  const publishDocText = (docText: string) => {
+  const publishDocText = useCallback((docText: string) => {
     if (typeof window === "undefined") {
       return;
     }
     hostRef.current?.setAttribute("data-editor-text", docText);
-  };
+  }, []);
 
-  const publishEvent = (kind: string, docText: string) => {
-    if (typeof window === "undefined") {
-      return;
+  const publishEvent = useCallback(
+    (kind: string, docText: string) => {
+      if (typeof window === "undefined") {
+        return;
+      }
+      window.__NETCODE_EDITOR_EVENTS__ = window.__NETCODE_EDITOR_EVENTS__ ?? [];
+      window.__NETCODE_EDITOR_EVENTS__.push({ id, kind, text: docText });
+    },
+    [id],
+  );
+
+  const buildOpsFromDiff = useCallback(
+    (previousText: string, nextText: string): RopeOperation[] => {
+      if (previousText === nextText) {
+        return [];
+      }
+
+      let start = 0;
+      while (
+        start < previousText.length &&
+        start < nextText.length &&
+        previousText[start] === nextText[start]
+      ) {
+        start++;
+      }
+
+      let previousEnd = previousText.length;
+      let nextEnd = nextText.length;
+      while (
+        previousEnd > start &&
+        nextEnd > start &&
+        previousText[previousEnd - 1] === nextText[nextEnd - 1]
+      ) {
+        previousEnd--;
+        nextEnd--;
+      }
+
+      const ops: RopeOperation[] = [];
+      if (previousEnd > start) {
+        ops.push({
+          event: "text_update",
+          type: "delete",
+          from: start,
+          to: previousEnd,
+          version: 0,
+          author: 0,
+        });
+      }
+
+      if (nextEnd > start) {
+        ops.push({
+          event: "text_update",
+          type: "insert",
+          pos: start,
+          value: nextText.slice(start, nextEnd),
+          version: 0,
+          author: 0,
+        });
+      }
+
+      return ops;
+    },
+    [],
+  );
+
+  const syncHostMetadata = useCallback(
+    (settings: EditorSettings) => {
+      hostRef.current?.setAttribute(
+        "data-editor-font-size",
+        `${settings.fontSize}`,
+      );
+      hostRef.current?.setAttribute(
+        "data-editor-font-family",
+        settings.fontFamily,
+      );
+      hostRef.current?.setAttribute(
+        "data-editor-tab-size",
+        `${settings.tabSize}`,
+      );
+    },
+    [],
+  );
+
+  const withSuppressedDispatch = useCallback((callback: () => void) => {
+    suppressDispatchRef.current = true;
+    try {
+      callback();
+    } finally {
+      suppressDispatchRef.current = false;
     }
-    window.__NETCODE_EDITOR_EVENTS__ = window.__NETCODE_EDITOR_EVENTS__ ?? [];
-    window.__NETCODE_EDITOR_EVENTS__.push({ id, kind, text: docText });
-  };
+  }, []);
 
-  const buildOpsFromDiff = (
-    previousText: string,
-    nextText: string
-  ): RopeOperation[] => {
-    if (previousText === nextText) {
-      return [];
-    }
+  const replaceDocument = useCallback(
+    (view: EditorView, nextText: string) => {
+      const currentDoc = view.state.doc.toString();
+      if (currentDoc === nextText) {
+        return;
+      }
 
-    let start = 0;
-    while (
-      start < previousText.length &&
-      start < nextText.length &&
-      previousText[start] === nextText[start]
-    ) {
-      start++;
-    }
+      const selection = view.state.selection.main;
 
-    let previousEnd = previousText.length;
-    let nextEnd = nextText.length;
-    while (
-      previousEnd > start &&
-      nextEnd > start &&
-      previousText[previousEnd - 1] === nextText[nextEnd - 1]
-    ) {
-      previousEnd--;
-      nextEnd--;
-    }
-
-    const ops: RopeOperation[] = [];
-    if (previousEnd > start) {
-      ops.push({
-        event: "text_update",
-        type: "delete",
-        from: start,
-        to: previousEnd,
-        version: 0,
-        author: 0,
+      withSuppressedDispatch(() => {
+        view.dispatch({
+          changes: {
+            from: 0,
+            to: currentDoc.length,
+            insert: nextText,
+          },
+          selection: {
+            anchor: Math.min(selection.anchor, nextText.length),
+            head: Math.min(selection.head, nextText.length),
+          },
+        });
       });
-    }
+    },
+    [withSuppressedDispatch],
+  );
 
-    if (nextEnd > start) {
-      ops.push({
-        event: "text_update",
-        type: "insert",
-        pos: start,
-        value: nextText.slice(start, nextEnd),
-        version: 0,
-        author: 0,
+  const applyIncomingOperations = useCallback(
+    (view: EditorView, pendingOps: RopeOperation[]) => {
+      const shouldMapSelection = view.hasFocus;
+      const selection = view.state.selection.main;
+      let anchor = selection.anchor;
+      let head = selection.head;
+
+      const mapPosition = (pos: number, op: RopeOperation) => {
+        if (op.type === "insert") {
+          return op.pos <= pos ? pos + op.value.length : pos;
+        }
+        if (op.to <= pos) {
+          return pos - (op.to - op.from);
+        }
+        if (op.from < pos) {
+          return op.from;
+        }
+        return pos;
+      };
+
+      withSuppressedDispatch(() => {
+        try {
+          for (const op of pendingOps) {
+            if (op.type === "insert") {
+              const from = Math.max(0, Math.min(op.pos, view.state.doc.length));
+              view.dispatch({
+                changes: {
+                  from,
+                  insert: op.value,
+                },
+              });
+            } else {
+              const from = Math.max(0, Math.min(op.from, view.state.doc.length));
+              const to = Math.max(from, Math.min(op.to, view.state.doc.length));
+              view.dispatch({
+                changes: {
+                  from,
+                  to,
+                  insert: "",
+                },
+              });
+            }
+            if (shouldMapSelection) {
+              anchor = mapPosition(anchor, op);
+              head = mapPosition(head, op);
+            }
+          }
+
+          if (shouldMapSelection) {
+            const docLen = view.state.doc.length;
+            view.dispatch({
+              selection: {
+                anchor: Math.max(0, Math.min(anchor, docLen)),
+                head: Math.max(0, Math.min(head, docLen)),
+              },
+            });
+          }
+        } catch {
+          const currentDoc = view.state.doc.toString();
+          let fallbackDoc = currentDoc;
+          for (const op of pendingOps) {
+            fallbackDoc = applyOpToText(fallbackDoc, op);
+          }
+          view.dispatch({
+            changes: {
+              from: 0,
+              to: currentDoc.length,
+              insert: fallbackDoc,
+            },
+          });
+          publishDocText(fallbackDoc);
+          publishEvent("remote_fallback", fallbackDoc);
+          return;
+        }
+
+        publishDocText(view.state.doc.toString());
+        publishEvent("remote_apply", view.state.doc.toString());
       });
-    }
+    },
+    [applyOpToText, publishDocText, publishEvent, withSuppressedDispatch],
+  );
 
-    return ops;
-  };
-
-  useEffect(() => {
-    submitOpsRef.current = setText;
-  }, [setText]);
-
-  useEffect(() => {
-    if (!hostRef.current || viewRef.current) {
-      return;
-    }
-
-    const extensions: Extension[] = [
+  const createEditorExtensions = useCallback((): Extension[] => {
+    return [
       editableCompartmentRef.current.of(EditorView.editable.of(isSynced)),
       editorThemeCompartmentRef.current.of(buildEditorTheme(editorSettings)),
       lineNumbers(),
       history(),
       drawSelection(),
       highlightActiveLine(),
-      keymapCompartmentRef.current.of(buildEditorKeymap(editorSettings.tabSize)),
+      keymapCompartmentRef.current.of(
+        buildEditorKeymap(editorSettings.tabSize),
+      ),
       tabSizeCompartmentRef.current.of(
-        EditorState.tabSize.of(editorSettings.tabSize)
+        EditorState.tabSize.of(editorSettings.tabSize),
       ),
       EditorView.updateListener.of((update) => {
         if (!update.docChanged || suppressDispatchRef.current) {
@@ -298,13 +432,13 @@ function Textbox({
               op.type === "delete" &&
               op.from === 0 &&
               op.to === previousDocLen &&
-              previousDocLen > 1
+              previousDocLen > 1,
           );
 
         if (isSuspiciousReplaceAll) {
           ops = buildOpsFromDiff(
             update.startState.doc.toString(),
-            update.state.doc.toString()
+            update.state.doc.toString(),
           );
         }
 
@@ -315,11 +449,32 @@ function Textbox({
         }
       }),
     ];
+  }, [
+    buildOpsFromDiff,
+    editorSettings,
+    isSynced,
+    publishDocText,
+    publishEvent,
+  ]);
+  const initialExtensionsRef = useRef<Extension[] | null>(null);
+  if (initialExtensionsRef.current === null) {
+    initialExtensionsRef.current = createEditorExtensions();
+  }
 
+  useEffect(() => {
+    submitOpsRef.current = setText;
+  }, [setText]);
+
+  useEffect(() => {
+    if (!hostRef.current || viewRef.current) {
+      return;
+    }
+
+    const initialSettings = initialSettingsRef.current;
     viewRef.current = new EditorView({
       state: EditorState.create({
-        doc: curText,
-        extensions,
+        doc: initialDocRef.current,
+        extensions: initialExtensionsRef.current ?? [],
       }),
       parent: hostRef.current,
     });
@@ -330,9 +485,7 @@ function Textbox({
     view.contentDOM.setAttribute("autocorrect", "off");
     view.contentDOM.setAttribute("autocapitalize", "off");
     view.contentDOM.setAttribute("data-gramm", "false");
-    hostRef.current?.setAttribute("data-editor-font-size", `${editorSettings.fontSize}`);
-    hostRef.current?.setAttribute("data-editor-font-family", editorSettings.fontFamily);
-    hostRef.current?.setAttribute("data-editor-tab-size", `${editorSettings.tabSize}`);
+    syncHostMetadata(initialSettings);
     publishDocText(view.state.doc.toString());
     publishEvent("mount", view.state.doc.toString());
 
@@ -340,7 +493,7 @@ function Textbox({
       view.destroy();
       viewRef.current = null;
     };
-  }, [id]);
+  }, [id, publishDocText, publishEvent, syncHostMetadata]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -355,84 +508,8 @@ function Textbox({
     }
     processedIncomingOps.current = incomingOp.length;
 
-    const shouldMapSelection = view.hasFocus;
-    const selection = view.state.selection.main;
-    let anchor = selection.anchor;
-    let head = selection.head;
-
-    const mapPosition = (pos: number, op: RopeOperation) => {
-      if (op.type === "insert") {
-        return op.pos <= pos ? pos + op.value.length : pos;
-      }
-      if (op.to <= pos) {
-        return pos - (op.to - op.from);
-      }
-      if (op.from < pos) {
-        return op.from;
-      }
-      return pos;
-    };
-
-    suppressDispatchRef.current = true;
-    try {
-      let fallbackDoc = view.state.doc.toString();
-      for (const op of pendingOps) {
-        fallbackDoc = applyOpToText(fallbackDoc, op);
-        if (op.type === "insert") {
-          const from = Math.max(0, Math.min(op.pos, view.state.doc.length));
-          view.dispatch({
-            changes: {
-              from,
-              insert: op.value,
-            },
-          });
-        } else {
-          const from = Math.max(0, Math.min(op.from, view.state.doc.length));
-          const to = Math.max(from, Math.min(op.to, view.state.doc.length));
-          view.dispatch({
-            changes: {
-              from,
-              to,
-              insert: "",
-            },
-          });
-        }
-        if (shouldMapSelection) {
-          anchor = mapPosition(anchor, op);
-          head = mapPosition(head, op);
-        }
-      }
-
-      if (shouldMapSelection) {
-        const docLen = view.state.doc.length;
-        view.dispatch({
-          selection: {
-            anchor: Math.max(0, Math.min(anchor, docLen)),
-            head: Math.max(0, Math.min(head, docLen)),
-          },
-        });
-      }
-      publishDocText(view.state.doc.toString());
-      publishEvent("remote_apply", view.state.doc.toString());
-    } catch {
-      const currentDoc = view.state.doc.toString();
-      let fallbackDoc = currentDoc;
-      for (const op of pendingOps) {
-        fallbackDoc = applyOpToText(fallbackDoc, op);
-      }
-      view.dispatch({
-        changes: {
-          from: 0,
-          to: currentDoc.length,
-          insert: fallbackDoc,
-        },
-      });
-      publishDocText(fallbackDoc);
-      publishEvent("remote_fallback", fallbackDoc);
-    } finally {
-      suppressDispatchRef.current = false;
-    }
-  }, [incomingOp]);
+    applyIncomingOperations(view, pendingOps);
+  }, [applyIncomingOperations, incomingOp]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -440,46 +517,18 @@ function Textbox({
       return;
     }
 
-    const currentDoc = view.state.doc.toString();
-    if (currentDoc === curText) {
-      return;
-    }
-
-    const selection = view.state.selection.main;
-
-    suppressDispatchRef.current = true;
-    try {
-      view.dispatch({
-        changes: {
-          from: 0,
-          to: currentDoc.length,
-          insert: curText,
-        },
-        selection: {
-          anchor: Math.min(selection.anchor, curText.length),
-          head: Math.min(selection.head, curText.length),
-        },
-      });
-      processedIncomingOps.current = incomingOp.length;
-      publishDocText(curText);
-      publishEvent("snapshot_replace", curText);
-    } finally {
-      suppressDispatchRef.current = false;
-    }
-  }, [syncVersion]);
-
-  useEffect(() => {
-    const view = viewRef.current;
-    if (!view) {
-      return;
-    }
-
-    view.dispatch({
-      effects: editableCompartmentRef.current.reconfigure(
-        EditorView.editable.of(isSynced)
-      ),
-    });
-  }, [isSynced]);
+    replaceDocument(view, curText);
+    processedIncomingOps.current = incomingOp.length;
+    publishDocText(curText);
+    publishEvent("snapshot_replace", curText);
+  }, [
+    curText,
+    incomingOp.length,
+    publishDocText,
+    publishEvent,
+    replaceDocument,
+    syncVersion,
+  ]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -489,31 +538,23 @@ function Textbox({
 
     view.dispatch({
       effects: [
+        editableCompartmentRef.current.reconfigure(
+          EditorView.editable.of(isSynced),
+        ),
         editorThemeCompartmentRef.current.reconfigure(
-          buildEditorTheme(editorSettings)
+          buildEditorTheme(editorSettings),
         ),
         tabSizeCompartmentRef.current.reconfigure(
-          EditorState.tabSize.of(editorSettings.tabSize)
+          EditorState.tabSize.of(editorSettings.tabSize),
         ),
         keymapCompartmentRef.current.reconfigure(
-          buildEditorKeymap(editorSettings.tabSize)
+          buildEditorKeymap(editorSettings.tabSize),
         ),
       ],
     });
 
-    hostRef.current?.setAttribute(
-      "data-editor-font-size",
-      `${editorSettings.fontSize}`
-    );
-    hostRef.current?.setAttribute(
-      "data-editor-font-family",
-      editorSettings.fontFamily
-    );
-    hostRef.current?.setAttribute(
-      "data-editor-tab-size",
-      `${editorSettings.tabSize}`
-    );
-  }, [editorSettings]);
+    syncHostMetadata(editorSettings);
+  }, [editorSettings, isSynced, syncHostMetadata]);
 
   return (
     <div className="flex h-full min-h-0 flex-row overflow-hidden rounded border-2 border-[#213030] md:rounded-r-none">

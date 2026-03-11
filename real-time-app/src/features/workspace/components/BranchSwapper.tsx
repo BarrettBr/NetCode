@@ -1,5 +1,5 @@
 import { GitBranch } from "lucide-react";
-import SelectScrollable from "@/components/select-10";
+import SelectScrollable from "@/features/editor/components/SelectScrollable";
 
 export default function BranchSwapper() {
   return (

@@ -30,8 +30,111 @@ const initialTree: ExplorerNode[] = [
         name: "components",
         type: "directory",
         children: [
-          { id: "src-components-navbar", name: "Navbar.tsx", type: "file" },
-          { id: "src-components-textbox", name: "textbox.tsx", type: "file" },
+          {
+            id: "src-components-navigation",
+            name: "navigation",
+            type: "directory",
+            children: [
+              {
+                id: "src-components-navigation-navbar",
+                name: "Navbar.tsx",
+                type: "file",
+              },
+            ],
+          },
+          {
+            id: "src-components-ui",
+            name: "ui",
+            type: "directory",
+            children: [
+              {
+                id: "src-components-ui-button",
+                name: "button.tsx",
+                type: "file",
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: "src-features",
+        name: "features",
+        type: "directory",
+        children: [
+          {
+            id: "src-features-dashboard",
+            name: "dashboard",
+            type: "directory",
+            children: [
+              {
+                id: "src-features-dashboard-components",
+                name: "components",
+                type: "directory",
+                children: [
+                  {
+                    id: "src-features-dashboard-components-dashboard",
+                    name: "Dashboard.tsx",
+                    type: "file",
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            id: "src-features-editor",
+            name: "editor",
+            type: "directory",
+            children: [
+              {
+                id: "src-features-editor-components",
+                name: "components",
+                type: "directory",
+                children: [
+                  {
+                    id: "src-features-editor-components-toolbar",
+                    name: "Toolbar.tsx",
+                    type: "file",
+                  },
+                  {
+                    id: "src-features-editor-components-textbox",
+                    name: "Textbox.tsx",
+                    type: "file",
+                  },
+                ],
+              },
+            ],
+          },
+          {
+            id: "src-features-workspace",
+            name: "workspace",
+            type: "directory",
+            children: [
+              {
+                id: "src-features-workspace-components",
+                name: "components",
+                type: "directory",
+                children: [
+                  {
+                    id: "src-features-workspace-components-sidebar",
+                    name: "Sidebar.tsx",
+                    type: "file",
+                  },
+                  {
+                    id: "src-features-workspace-components-terminal",
+                    name: "terminal",
+                    type: "directory",
+                    children: [
+                      {
+                        id: "src-features-workspace-components-terminal-pane",
+                        name: "WorkspaceTerminalPane.tsx",
+                        type: "file",
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
         ],
       },
     ],
@@ -118,9 +221,15 @@ export default function FileExplorer() {
   const [tree, setTree] = useState(initialTree);
   const [openRepos, setOpenRepos] = useState<Record<string, boolean>>({
     src: true,
+    "src-components": true,
+    "src-features": true,
+    "src-features-editor": true,
+    "src-features-editor-components": true,
     backend: true,
   });
-  const [selectedId, setSelectedId] = useState<string | null>("src-components");
+  const [selectedId, setSelectedId] = useState<string | null>(
+    "src-features-editor-components"
+  );
   const repoFileCount = useMemo(() => countNodes(tree, "file"), [tree]);
 
   const toggleRepo = (repo: string) =>

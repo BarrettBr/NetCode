@@ -1,6 +1,6 @@
 import settingsIcon from "@/assets/settings.svg";
-import WorkspaceSwitcher from "@/components/WorkspaceSwitcher";
-import FileExplorer from "@/components/FileExplorer";
+import WorkspaceSwitcher from "./WorkspaceSwitcher";
+import FileExplorer from "./FileExplorer";
 
 type Props = {
   currentSite: string;

@@ -1,27 +1,25 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppConfig } from "@/config";
-
-export type TerminalScope = "private" | "shared";
-export type TerminalStatus = "idle" | "running" | "closed";
-
-export type TerminalTab = {
-  id: string;
-  scope: TerminalScope;
-  title: string;
-  status: TerminalStatus;
-  buffer: string;
-  commandDraft: string;
-};
-
-type ServerTerminalTab = {
-  id: string;
-  scope: TerminalScope;
-  status?: TerminalStatus;
-  buffer?: string;
-};
-
-type TerminalCollection = Record<TerminalScope, TerminalTab[]>;
-type ActiveTerminalIds = Record<TerminalScope, string | null>;
+import {
+  type ActiveTerminalIds,
+  sanitizeTerminalText,
+  type TerminalCollection,
+  type TerminalScope,
+  type ServerTerminalTab,
+  type TerminalTab,
+} from "@/lib/workspaceTerminal";
+import {
+  applyTerminalClosed,
+  applyTerminalCreated,
+  applyTerminalDraft,
+  applyTerminalSnapshot,
+  appendTerminalOutput,
+  createEmptyWorkspaceTerminalState,
+  setActiveTerminalTab,
+  setTerminalStatus,
+  submitTerminalCommand,
+} from "@/hooks/workspaceTerminalState";
+import type { WorkspaceTerminalState } from "@/hooks/workspaceTerminalState";
 
 type UseWorkspaceTerminalResult = {
   socketReady: boolean;
@@ -43,62 +41,23 @@ type UseWorkspaceTerminalResult = {
   ) => void;
 };
 
-const EMPTY_TABS: TerminalCollection = {
-  private: [],
-  shared: [],
-};
-
-const EMPTY_ACTIVE_IDS: ActiveTerminalIds = {
-  private: null,
-  shared: null,
-};
-
-function sanitizeTerminalText(value: string): string {
-  return value
-    .replace(/\u001b\][^\u0007]*\u0007/g, "")
-    .replace(/\u001b\][^\u001b]*\u001b\\/g, "")
-    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
-    .replace(/\u001b[@-_]/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "");
-}
-
-function normalizeTabs(
-  scope: TerminalScope,
-  incoming: ServerTerminalTab[] | undefined,
-  previous: TerminalTab[]
-): TerminalTab[] {
-  const prevById = new Map(previous.map((tab) => [tab.id, tab]));
-
-  return (incoming ?? []).map((tab, index) => {
-    const existing = prevById.get(tab.id);
-    return {
-      id: tab.id,
-      scope,
-      title: `${index + 1}`,
-      status: tab.status ?? existing?.status ?? "idle",
-      buffer: sanitizeTerminalText(tab.buffer ?? existing?.buffer ?? ""),
-      commandDraft: existing?.commandDraft ?? "",
-    };
-  });
-}
-
-function nextActiveId(tabs: TerminalTab[], preferredId: string | null) {
-  if (preferredId && tabs.some((tab) => tab.id === preferredId)) {
-    return preferredId;
-  }
-  return tabs[0]?.id ?? null;
-}
-
 export function useWorkspaceTerminal(): UseWorkspaceTerminalResult {
   const [socketReady, setSocketReady] = useState(false);
   const [activeScope, setActiveScope] = useState<TerminalScope>("private");
-  const [tabs, setTabs] = useState<TerminalCollection>(EMPTY_TABS);
-  const [activeTabIds, setActiveTabIds] =
-    useState<ActiveTerminalIds>(EMPTY_ACTIVE_IDS);
+  const [terminalState, setTerminalState] = useState<WorkspaceTerminalState>(
+    createEmptyWorkspaceTerminalState,
+  );
 
   const socketRef = useRef<WebSocket | null>(null);
   const idleTimersRef = useRef<Record<string, number>>({});
+
+  const sendMessage = useCallback((payload: Record<string, unknown>) => {
+    const socket = socketRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    socket.send(JSON.stringify(payload));
+  }, []);
 
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -126,25 +85,16 @@ export function useWorkspaceTerminal(): UseWorkspaceTerminalResult {
 
       switch (data.event) {
         case "terminal_snapshot": {
-          setTabs((prev) => {
-            const nextTabs: TerminalCollection = {
-              private: normalizeTabs(
-                "private",
-                data.update?.privateTabs as ServerTerminalTab[] | undefined,
-                prev.private
-              ),
-              shared: normalizeTabs(
-                "shared",
-                data.update?.sharedTabs as ServerTerminalTab[] | undefined,
-                prev.shared
-              ),
-            };
-            setActiveTabIds((prevActive) => ({
-              private: nextActiveId(nextTabs.private, prevActive.private),
-              shared: nextActiveId(nextTabs.shared, prevActive.shared),
-            }));
-            return nextTabs;
-          });
+          setTerminalState((prev) =>
+            applyTerminalSnapshot(prev, {
+              privateTabs: data.update?.privateTabs as
+                | ServerTerminalTab[]
+                | undefined,
+              sharedTabs: data.update?.sharedTabs as
+                | ServerTerminalTab[]
+                | undefined,
+            }),
+          );
           break;
         }
         case "terminal_created": {
@@ -157,27 +107,9 @@ export function useWorkspaceTerminal(): UseWorkspaceTerminalResult {
             break;
           }
 
-          setTabs((prev) => {
-            const nextScopeTabs = normalizeTabs(scope, [...prev[scope], {
-              id: serverTab.id,
-              scope,
-              status: serverTab.status ?? "idle",
-              buffer: sanitizeTerminalText(serverTab.buffer ?? ""),
-              title: "",
-              commandDraft: "",
-            }], prev[scope]);
-
-            const nextTabs = {
-              ...prev,
-              [scope]: nextScopeTabs,
-            };
-
-            setActiveTabIds((prevActive) => ({
-              ...prevActive,
-              [scope]: prevActive[scope] ?? serverTab.id,
-            }));
-            return nextTabs;
-          });
+          setTerminalState((prev) =>
+            applyTerminalCreated(prev, scope, serverTab),
+          );
           break;
         }
         case "terminal_output": {
@@ -190,37 +122,42 @@ export function useWorkspaceTerminal(): UseWorkspaceTerminalResult {
             break;
           }
           const chunk = sanitizeTerminalText(
-            typeof update?.chunk === "string" ? update.chunk : ""
+            typeof update?.chunk === "string" ? update.chunk : "",
           );
 
-          setTabs((prev) => {
-            const nextScopeTabs = prev[scope].map((tab) =>
-              tab.id === terminalId
-                ? {
-                    ...tab,
-                    status: "running",
-                    buffer: `${tab.buffer}${chunk}`,
-                  }
-                : tab
-            );
-            return {
-              ...prev,
-              [scope]: nextScopeTabs,
-            };
-          });
+          setTerminalState((prev) =>
+            appendTerminalOutput(prev, scope, terminalId, chunk),
+          );
 
           const timerKey = `${scope}:${terminalId}`;
           if (idleTimersRef.current[timerKey]) {
             window.clearTimeout(idleTimersRef.current[timerKey]);
           }
           idleTimersRef.current[timerKey] = window.setTimeout(() => {
-            setTabs((prev) => ({
-              ...prev,
-              [scope]: prev[scope].map((tab) =>
-                tab.id === terminalId ? { ...tab, status: "idle" } : tab
-              ),
-            }));
+            setTerminalState((prev) =>
+              setTerminalStatus(prev, scope, terminalId, "idle"),
+            );
           }, 400);
+          break;
+        }
+        case "terminal_draft": {
+          const update = data.update as
+            | { scope?: TerminalScope; terminalId?: string; draft?: string }
+            | undefined;
+          const scope = update?.scope;
+          const terminalId = update?.terminalId;
+          if (!scope || !terminalId) {
+            break;
+          }
+
+          setTerminalState((prev) =>
+            applyTerminalDraft(
+              prev,
+              scope,
+              terminalId,
+              typeof update?.draft === "string" ? update.draft : "",
+            ),
+          );
           break;
         }
         case "terminal_closed": {
@@ -233,19 +170,9 @@ export function useWorkspaceTerminal(): UseWorkspaceTerminalResult {
             break;
           }
 
-          setTabs((prev) => {
-            const remaining = prev[scope]
-              .filter((tab) => tab.id !== terminalId)
-              .map((tab, index) => ({ ...tab, title: `${index + 1}` }));
-            setActiveTabIds((prevActive) => ({
-              ...prevActive,
-              [scope]: nextActiveId(remaining, prevActive[scope] === terminalId ? null : prevActive[scope]),
-            }));
-            return {
-              ...prev,
-              [scope]: remaining,
-            };
-          });
+          setTerminalState((prev) =>
+            applyTerminalClosed(prev, scope, terminalId),
+          );
           break;
         }
         case "terminal_error":
@@ -264,85 +191,70 @@ export function useWorkspaceTerminal(): UseWorkspaceTerminalResult {
   }, []);
 
   const activeTab = useMemo(() => {
-    const activeId = activeTabIds[activeScope];
+    const activeId = terminalState.activeTabIds[activeScope];
     if (!activeId) {
       return null;
     }
-    return tabs[activeScope].find((tab) => tab.id === activeId) ?? null;
-  }, [activeScope, activeTabIds, tabs]);
+    return terminalState.tabs[activeScope].find((tab) => tab.id === activeId) ?? null;
+  }, [activeScope, terminalState]);
 
-  const sendMessage = (payload: Record<string, unknown>) => {
-    const socket = socketRef.current;
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      return;
-    }
-    socket.send(JSON.stringify(payload));
-  };
-
-  const createTerminal = () => {
+  const createTerminal = useCallback(() => {
     sendMessage({
       event: "terminal_create",
       scope: activeScope,
     });
-  };
+  }, [activeScope, sendMessage]);
 
-  const closeTerminal = (scope: TerminalScope, terminalId: string) => {
+  const closeTerminal = useCallback((scope: TerminalScope, terminalId: string) => {
     sendMessage({
       event: "terminal_close",
       scope,
       terminalId,
     });
-  };
+  }, [sendMessage]);
 
-  const setActiveTab = (scope: TerminalScope, terminalId: string) => {
-    setActiveTabIds((prev) => ({
-      ...prev,
-      [scope]: terminalId,
-    }));
-  };
+  const setActiveTab = useCallback((scope: TerminalScope, terminalId: string) => {
+    setTerminalState((prev) => setActiveTerminalTab(prev, scope, terminalId));
+  }, []);
 
-  const updateDraft = (
+  const updateDraft = useCallback((
     scope: TerminalScope,
     terminalId: string,
-    draft: string
+    draft: string,
   ) => {
-    setTabs((prev) => ({
-      ...prev,
-      [scope]: prev[scope].map((tab) =>
-        tab.id === terminalId ? { ...tab, commandDraft: draft } : tab
-      ),
-    }));
-  };
+    setTerminalState((prev) => applyTerminalDraft(prev, scope, terminalId, draft));
 
-  const runCommand = (scope: TerminalScope, terminalId: string) => {
-    const tab = tabs[scope].find((candidate) => candidate.id === terminalId);
-    const command = tab?.commandDraft ?? "";
-    if (!command.trim()) {
+    if (scope === "shared") {
+      sendMessage({
+        event: "terminal_draft",
+        scope,
+        terminalId,
+        draft,
+      });
+    }
+  }, [sendMessage]);
+
+  const runCommand = useCallback((scope: TerminalScope, terminalId: string) => {
+    const result = submitTerminalCommand(terminalState, scope, terminalId);
+    if (!result) {
       return;
     }
 
-    setTabs((prev) => ({
-      ...prev,
-      [scope]: prev[scope].map((candidate) =>
-        candidate.id === terminalId
-          ? { ...candidate, status: "running", commandDraft: "" }
-          : candidate
-      ),
-    }));
+    setTerminalState(result.nextState);
 
     sendMessage({
       event: "terminal_run",
       scope,
       terminalId,
-      command,
+      command: result.command,
     });
-  };
+  }, [sendMessage, terminalState]);
 
-  const resizeTerminal = (
+  const resizeTerminal = useCallback((
     scope: TerminalScope,
     terminalId: string,
     cols: number,
-    rows: number
+    rows: number,
   ) => {
     sendMessage({
       event: "terminal_resize",
@@ -351,14 +263,14 @@ export function useWorkspaceTerminal(): UseWorkspaceTerminalResult {
       cols: Math.max(1, Math.round(cols)),
       rows: Math.max(1, Math.round(rows)),
     });
-  };
+  }, [sendMessage]);
 
   return {
     socketReady,
     activeScope,
     setActiveScope,
-    tabs,
-    activeTabIds,
+    tabs: terminalState.tabs,
+    activeTabIds: terminalState.activeTabIds,
     activeTab,
     createTerminal,
     closeTerminal,

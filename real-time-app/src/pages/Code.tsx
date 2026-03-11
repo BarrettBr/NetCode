@@ -1,7 +1,7 @@
-import Textbox from "@/components/textbox";
-import Outputbox from "@/components/outputBox";
-import Toolbar from "@/components/Toolbar";
-import OutputToolbar from "@/components/OutputToolbar";
+import Textbox from "@/features/editor/components/Textbox";
+import OutputBox from "@/features/editor/components/OutputBox";
+import Toolbar from "@/features/editor/components/Toolbar";
+import OutputToolbar from "@/features/editor/components/OutputToolbar";
 import { useRopes } from "@/hooks/useRopes";
 import { useState } from "react";
 import {
@@ -44,7 +44,7 @@ function Code({ editorSettings = DEFAULT_EDITOR_SETTINGS }: Props) {
             setActiveOutput={setActiveOutput}
             activeOutput={activeOutput}
           />
-          <Outputbox
+          <OutputBox
             curText={activeOutput === "terminal" ? outputText : responseText}
             activeOutput={activeOutput}
             id="mainOutput"

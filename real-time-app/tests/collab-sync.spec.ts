@@ -106,20 +106,24 @@ test("desktop and mobile stay in sync for initial snapshot and bidirectional typ
   await expect.poll(() => editorText(mobilePage)).toBe(initialText);
 
   await desktopEditor.click();
-  await page.keyboard.type("X");
+  await page.keyboard.type(" desktop-sync");
   await expect.poll(async () => (await editorText(page)).length).toBeGreaterThan(
     initialText.length
   );
   const firstSharedText = await editorText(page);
+  expect(firstSharedText).toContain("desktop-sync");
   await expect.poll(() => editorText(mobilePage)).toBe(firstSharedText);
 
   const mobileEditor = mobilePage.locator("#mainInput");
   await mobileEditor.click();
-  await mobilePage.keyboard.type("Y");
+  await mobilePage.keyboard.type(" mobile-sync");
   await expect.poll(async () => (await editorText(mobilePage)).length).toBeGreaterThan(
     firstSharedText.length
   );
-  await expect.poll(() => editorText(page)).toBe(await editorText(mobilePage));
+  const secondSharedText = await editorText(mobilePage);
+  expect(secondSharedText).toContain("desktop-sync");
+  expect(secondSharedText).toContain("mobile-sync");
+  await expect.poll(() => editorText(page)).toBe(secondSharedText);
 
   await mobileContext.close();
 });

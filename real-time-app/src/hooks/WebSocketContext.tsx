@@ -1,6 +1,16 @@
 // hooks/WebSocketContext.tsx
-import React, { createContext, useContext, useEffect, useMemo, useRef } from "react";
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+} from "react";
 import { AppConfig } from "@/config";
+import {
+  createInitialEditorSessionState,
+  type EditorSessionState,
+} from "@/hooks/editorSessionState";
 
 /* 
   Create a WebSocket context using React Context API.
@@ -10,6 +20,7 @@ type MessageListener = (event: MessageEvent<string>) => void;
 
 type WebSocketContextValue = {
   socketRef: React.MutableRefObject<WebSocket | null>;
+  editorSessionRef: React.MutableRefObject<EditorSessionState>;
   subscribe: (listener: MessageListener) => () => void;
 };
 
@@ -30,12 +41,16 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
   const socketRef = useRef<WebSocket | null>(null);
+  const editorSessionRef = useRef<EditorSessionState>(
+    createInitialEditorSessionState(),
+  );
   const listenersRef = useRef(new Set<MessageListener>());
   const backlogRef = useRef<MessageEvent<string>[]>([]);
 
   const contextValue = useMemo<WebSocketContextValue>(
     () => ({
       socketRef,
+      editorSessionRef,
       subscribe: (listener) => {
         listenersRef.current.add(listener);
 
@@ -52,7 +67,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({
         };
       },
     }),
-    []
+    [],
   );
 
   useEffect(() => {

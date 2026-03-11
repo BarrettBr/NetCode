@@ -1,9 +1,9 @@
-import Dashboard from "@/components/Dashboard";
+import Dashboard from "@/features/dashboard/components/Dashboard";
 import dashIcon from "@/assets/dashboard.svg";
 import codeIcon from "@/assets/code-file.svg";
 import WorkspaceCode from "@/pages/WorkspaceCode";
 import Settings from "@/pages/Settings";
-import Sidebar from "@/components/Sidebar";
+import Sidebar from "@/features/workspace/components/Sidebar";
 import {
   DEFAULT_EDITOR_SETTINGS,
   type EditorSettings,

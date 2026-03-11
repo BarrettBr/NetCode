@@ -13,10 +13,14 @@ test("workspace dashboard supports notes and file actions", async ({ page }) => 
   await expect(page.getByText(/untitled-\d+\.ts/)).toBeVisible();
   await expect(page.getByText(/new-folder-\d+/)).toBeVisible();
 
-  const noteInput = page.getByPlaceholder("Add a note...");
-  await noteInput.fill("Ship the workspace polish after design review.");
-  await noteInput.press("Enter");
+  await page.getByRole("button", { name: "Create note" }).click();
+  await page.getByPlaceholder("Release checklist").fill("Design review");
+  await page
+    .getByPlaceholder("Add context, tasks, or reminders for this note.")
+    .fill("Ship the workspace polish after design review.");
+  await page.getByRole("button", { name: "Create note" }).last().click();
 
+  await expect(page.getByText("Design review", { exact: true })).toBeVisible();
   await expect(
     page.getByText("Ship the workspace polish after design review.")
   ).toBeVisible();
@@ -31,6 +35,8 @@ test("workspace code view stays editable after switching from the root editor", 
   await rootEditor.click();
   await page.keyboard.type("root text");
   await expect(rootEditor).toHaveAttribute("data-editor-text", /root text/);
+  await page.keyboard.type(" more");
+  await expect(rootEditor).toHaveAttribute("data-editor-text", /root text more/);
 
   await page.goto("/workspace");
   await page.getByRole("button", { name: "Code", exact: true }).click();
@@ -38,10 +44,11 @@ test("workspace code view stays editable after switching from the root editor", 
   const workspaceEditor = page.locator('[data-editor-text]').first();
   await workspaceEditor.click();
   await page.keyboard.type(" workspace");
+  await page.keyboard.type(" typing");
 
   await expect(workspaceEditor).toHaveAttribute(
     "data-editor-text",
-    /root text workspace/
+    /root text more workspace typing/
   );
 });
 

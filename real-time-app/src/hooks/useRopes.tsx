@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useWS } from "@/hooks/WebSocketContext";
+import { type EditorSessionState } from "@/hooks/editorSessionState";
 
 export type RopeOperation =
   | {
@@ -37,7 +38,10 @@ function authorPrecedes(left: number, right: number): boolean {
   return left < right;
 }
 
-function transformAgainstHistory(incoming: RopeOperation, history: RopeOperation): RopeOperation | null {
+function transformAgainstHistory(
+  incoming: RopeOperation,
+  history: RopeOperation,
+): RopeOperation | null {
   const next = cloneOp(incoming);
 
   if (next.type === "insert" && history.type === "insert") {
@@ -94,7 +98,7 @@ function transformAgainstHistory(incoming: RopeOperation, history: RopeOperation
 
 function transformConcurrentPair(
   pending: RopeOperation,
-  incoming: RopeOperation
+  incoming: RopeOperation,
 ): [RopeOperation | null, RopeOperation | null] {
   const rebasedPending = transformAgainstHistory(pending, incoming);
   const rebasedIncoming = transformAgainstHistory(incoming, pending);
@@ -112,109 +116,106 @@ function applyOpToText(baseText: string, op: RopeOperation): string {
   return baseText.slice(0, from) + baseText.slice(to);
 }
 
-type SharedEditorState = {
-  text: string;
-  outputText: string;
-  serverVersion: number;
-  localUID: number;
-  hasInitialSync: boolean;
-  syncVersion: number;
-};
-
-const sharedEditorState: SharedEditorState = {
-  text: "",
-  outputText: "",
-  serverVersion: 0,
-  localUID: 0,
-  hasInitialSync: false,
-  syncVersion: 0,
-};
-
 export function useRopes(): [
   string,
   (ops: RopeOperation[]) => void,
   string,
   RopeOperation[],
   number,
-  boolean
+  boolean,
 ] {
   const MAX_CURSOR_OPS = 300;
-  const textRef = useRef(sharedEditorState.text);
+  const { socketRef, subscribe, editorSessionRef } = useWS();
+  const initialState = useRef<EditorSessionState>(
+    editorSessionRef.current,
+  ).current;
+  const textRef = useRef(initialState.text);
   const pendingOpsRef = useRef<RopeOperation[]>([]);
   const bufferedOpsRef = useRef<RopeOperation[]>([]);
-  const serverVersionRef = useRef(sharedEditorState.serverVersion);
-  const localUID = useRef(sharedEditorState.localUID);
-  const hasInitialSyncRef = useRef(sharedEditorState.hasInitialSync);
+  const serverVersionRef = useRef(initialState.serverVersion);
+  const localUID = useRef(initialState.localUID);
+  const hasInitialSyncRef = useRef(initialState.hasInitialSync);
 
-  const [text, setText] = useState(sharedEditorState.text);
-  const [outputText, setOutput] = useState(sharedEditorState.outputText);
+  const [text, setText] = useState(initialState.text);
+  const [outputText, setOutput] = useState(initialState.outputText);
   const [incomingOp, setIncomingOp] = useState<RopeOperation[]>([]);
-  const [syncVersion, setSyncVersion] = useState(sharedEditorState.syncVersion);
-  const [isSynced, setIsSynced] = useState(sharedEditorState.hasInitialSync);
+  const [syncVersion, setSyncVersion] = useState(initialState.syncVersion);
+  const [isSynced, setIsSynced] = useState(initialState.hasInitialSync);
 
-  const { socketRef, subscribe } = useWS();
-  const debug = false;
+  const setSnapshotText = useCallback(
+    (newText: string) => {
+      textRef.current = newText;
+      editorSessionRef.current.text = newText;
+      pendingOpsRef.current = [];
+      setText(newText);
+      setSyncVersion((value) => {
+        const next = value + 1;
+        editorSessionRef.current.syncVersion = next;
+        return next;
+      });
+    },
+    [editorSessionRef],
+  );
 
-  function setSnapshotText(newText: string) {
-    textRef.current = newText;
-    sharedEditorState.text = newText;
-    pendingOpsRef.current = [];
-    setText(newText);
-    setSyncVersion((value) => {
-      const next = value + 1;
-      sharedEditorState.syncVersion = next;
-      return next;
-    });
-  }
-
-  function queueRemoteOp(op: RopeOperation) {
+  const queueRemoteOp = useCallback((op: RopeOperation) => {
     setIncomingOp((oldArray) => {
       const next = [...oldArray, op];
       return next.length > MAX_CURSOR_OPS
         ? next.slice(next.length - MAX_CURSOR_OPS)
         : next;
     });
-  }
+  }, []);
 
-  function rebaseIncomingAgainstPending(op: RopeOperation): RopeOperation | null {
-    let rebasedIncoming: RopeOperation | null = cloneOp(op);
-    const nextPending: RopeOperation[] = [];
+  const rebaseIncomingAgainstPending = useCallback(
+    (op: RopeOperation): RopeOperation | null => {
+      let rebasedIncoming: RopeOperation | null = cloneOp(op);
+      const nextPending: RopeOperation[] = [];
 
-    for (const pending of pendingOpsRef.current) {
-      if (!rebasedIncoming) {
-        nextPending.push(pending);
-        continue;
+      for (const pending of pendingOpsRef.current) {
+        if (!rebasedIncoming) {
+          nextPending.push(pending);
+          continue;
+        }
+
+        const [rebasedPending, nextIncoming] = transformConcurrentPair(
+          pending,
+          rebasedIncoming,
+        );
+        if (rebasedPending) {
+          nextPending.push(rebasedPending);
+        }
+        rebasedIncoming = nextIncoming;
       }
 
-      const [rebasedPending, nextIncoming] = transformConcurrentPair(
-        pending,
-        rebasedIncoming
-      );
-      if (rebasedPending) {
-        nextPending.push(rebasedPending);
+      pendingOpsRef.current = nextPending;
+      return rebasedIncoming;
+    },
+    [],
+  );
+
+  const sendOperation = useCallback(
+    (op: RopeOperation) => {
+      const ws = socketRef.current;
+      if (
+        !hasInitialSyncRef.current ||
+        !ws ||
+        ws.readyState !== WebSocket.OPEN
+      ) {
+        bufferedOpsRef.current.push(cloneOp(op));
+        return;
       }
-      rebasedIncoming = nextIncoming;
-    }
 
-    pendingOpsRef.current = nextPending;
-    return rebasedIncoming;
-  }
+      const outbound = cloneOp(op);
+      outbound.version =
+        serverVersionRef.current + pendingOpsRef.current.length;
+      outbound.author = localUID.current;
+      pendingOpsRef.current.push(outbound);
+      ws.send(JSON.stringify(outbound));
+    },
+    [socketRef],
+  );
 
-  function sendOperation(op: RopeOperation) {
-    const ws = socketRef.current;
-    if (!hasInitialSyncRef.current || !ws || ws.readyState !== WebSocket.OPEN) {
-      bufferedOpsRef.current.push(cloneOp(op));
-      return;
-    }
-
-    const outbound = cloneOp(op);
-    outbound.version = serverVersionRef.current + pendingOpsRef.current.length;
-    outbound.author = localUID.current;
-    pendingOpsRef.current.push(outbound);
-    ws.send(JSON.stringify(outbound));
-  }
-
-  function flushBufferedOperations() {
+  const flushBufferedOperations = useCallback(() => {
     const ws = socketRef.current;
     if (!hasInitialSyncRef.current || !ws || ws.readyState !== WebSocket.OPEN) {
       return;
@@ -229,23 +230,26 @@ export function useRopes(): [
     for (const op of bufferedOps) {
       sendOperation(op);
     }
-  }
+  }, [sendOperation, socketRef]);
 
-  const submitLocalOps = useCallback((ops: RopeOperation[]) => {
-    if (ops.length === 0) {
-      return;
-    }
+  const submitLocalOps = useCallback(
+    (ops: RopeOperation[]) => {
+      if (ops.length === 0) {
+        return;
+      }
 
-    let nextText = textRef.current;
-    for (const op of ops) {
-      nextText = applyOpToText(nextText, op);
-      sendOperation(op);
-    }
-    textRef.current = nextText;
-    sharedEditorState.text = nextText;
-    setText(nextText);
-    flushBufferedOperations();
-  }, []);
+      let nextText = textRef.current;
+      for (const op of ops) {
+        nextText = applyOpToText(nextText, op);
+        sendOperation(op);
+      }
+      textRef.current = nextText;
+      editorSessionRef.current.text = nextText;
+      setText(nextText);
+      flushBufferedOperations();
+    },
+    [editorSessionRef, flushBufferedOperations, sendOperation],
+  );
 
   useEffect(() => {
     const unsubscribe = subscribe((event) => {
@@ -257,9 +261,9 @@ export function useRopes(): [
           if (typeof inputOp?.version === "number") {
             serverVersionRef.current = Math.max(
               serverVersionRef.current,
-              inputOp.version
+              inputOp.version,
             );
-            sharedEditorState.serverVersion = serverVersionRef.current;
+            editorSessionRef.current.serverVersion = serverVersionRef.current;
           }
 
           const isRemoteInput =
@@ -276,7 +280,7 @@ export function useRopes(): [
           }
 
           textRef.current = applyOpToText(textRef.current, rebasedOp);
-          sharedEditorState.text = textRef.current;
+          editorSessionRef.current.text = textRef.current;
           setText(textRef.current);
           queueRemoteOp(rebasedOp);
           break;
@@ -290,7 +294,7 @@ export function useRopes(): [
           if (!isRemoteMismatch) {
             if (typeof mismatchOp?.version === "number") {
               serverVersionRef.current = mismatchOp.version;
-              sharedEditorState.serverVersion = serverVersionRef.current;
+              editorSessionRef.current.serverVersion = serverVersionRef.current;
             }
             break;
           }
@@ -298,9 +302,9 @@ export function useRopes(): [
           if (typeof mismatchOp?.version === "number") {
             serverVersionRef.current = Math.max(
               serverVersionRef.current,
-              mismatchOp.version
+              mismatchOp.version,
             );
-            sharedEditorState.serverVersion = serverVersionRef.current;
+            editorSessionRef.current.serverVersion = serverVersionRef.current;
           }
 
           const rebasedOp = rebaseIncomingAgainstPending(mismatchOp);
@@ -309,7 +313,7 @@ export function useRopes(): [
           }
 
           textRef.current = applyOpToText(textRef.current, rebasedOp);
-          sharedEditorState.text = textRef.current;
+          editorSessionRef.current.text = textRef.current;
           setText(textRef.current);
           queueRemoteOp(rebasedOp);
           break;
@@ -321,32 +325,32 @@ export function useRopes(): [
           if (typeof data.update?.version === "number") {
             serverVersionRef.current = Math.max(
               serverVersionRef.current,
-              data.update.version
+              data.update.version,
             );
-            sharedEditorState.serverVersion = serverVersionRef.current;
+            editorSessionRef.current.serverVersion = serverVersionRef.current;
           }
           flushBufferedOperations();
           break;
         }
         case "output_update":
-          sharedEditorState.outputText = data.update;
+          editorSessionRef.current.outputText = data.update;
           setOutput(data.update);
           break;
         case "connection_update": {
           if (typeof data.update.version === "number") {
             serverVersionRef.current = data.update.version;
-            sharedEditorState.serverVersion = data.update.version;
+            editorSessionRef.current.serverVersion = data.update.version;
           }
           if (typeof data.update.uid === "number") {
             localUID.current = data.update.uid;
-            sharedEditorState.localUID = data.update.uid;
+            editorSessionRef.current.localUID = data.update.uid;
           }
           if (typeof data.update.text === "string") {
             setIncomingOp([]);
             setSnapshotText(data.update.text);
           }
           hasInitialSyncRef.current = true;
-          sharedEditorState.hasInitialSync = true;
+          editorSessionRef.current.hasInitialSync = true;
           setIsSynced(true);
           flushBufferedOperations();
           break;
@@ -358,23 +362,28 @@ export function useRopes(): [
           }
           if (typeof data.update?.version === "number") {
             serverVersionRef.current = data.update.version;
-            sharedEditorState.serverVersion = data.update.version;
+            editorSessionRef.current.serverVersion = data.update.version;
           }
           hasInitialSyncRef.current = true;
-          sharedEditorState.hasInitialSync = true;
+          editorSessionRef.current.hasInitialSync = true;
           setIsSynced(true);
           flushBufferedOperations();
           break;
         }
         default:
-          if (debug) {
-            console.warn("Unknown WebSocket event:", data);
-          }
+          break;
       }
     });
 
     return unsubscribe;
-  }, [subscribe]);
+  }, [
+    editorSessionRef,
+    flushBufferedOperations,
+    queueRemoteOp,
+    rebaseIncomingAgainstPending,
+    setSnapshotText,
+    subscribe,
+  ]);
 
   return [text, submitLocalOps, outputText, incomingOp, syncVersion, isSynced];
 }

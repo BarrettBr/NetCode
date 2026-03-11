@@ -2,8 +2,8 @@ import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
 import Code from "@/pages/Code";
 import Landing from "@/pages/Landing";
 import Account from "@/pages/Account";
-import Navbar from "@/components/Navbar";
-import Workspace from "./pages/Workspace";
+import Navbar from "@/components/navigation/Navbar";
+import Workspace from "@/pages/Workspace";
 import { useState } from "react";
 
 function AppWrapper() {

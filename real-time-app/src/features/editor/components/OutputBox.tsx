@@ -20,7 +20,7 @@ type Props = {
     - ReactMarkdown
       Used to display code review with markdown support
 */
-function Outputbox({ curText, activeOutput, id }: Props) {
+function OutputBox({ curText, activeOutput, id }: Props) {
   return (
     <div className="font-fira textbox h-full">
       {activeOutput === "terminal" ? (
@@ -46,4 +46,4 @@ function Outputbox({ curText, activeOutput, id }: Props) {
   );
 }
 
-export default Outputbox;
+export default OutputBox;

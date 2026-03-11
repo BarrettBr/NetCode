@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { AppConfig } from "@/config";
-import LanguageSelector from "@/components/LanguageSelector";
+import LanguageSelector from "@/features/editor/components/LanguageSelector";
 
 /* 
 Tool Bar Component:
